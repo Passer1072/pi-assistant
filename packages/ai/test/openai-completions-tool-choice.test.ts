@@ -932,6 +932,72 @@ describe("openai-completions tool_choice", () => {
 		expect(params.reasoning_effort).toBe("high");
 	});
 
+	it("bridges DeepSeek user messages after tool results with reasoning_content", async () => {
+		const model = getModel("deepseek", "deepseek-v4-pro")!;
+		const assistantMessage: AssistantMessage = {
+			role: "assistant",
+			api: "openai-completions",
+			provider: "deepseek",
+			model: "deepseek-v4-pro",
+			content: [
+				{ type: "thinking", thinking: "Need current news.", thinkingSignature: "reasoning_content" },
+				{ type: "toolCall", id: "call_search", name: "web_search", arguments: { query: "今日新闻" } },
+			],
+			usage: {
+				input: 0,
+				output: 0,
+				cacheRead: 0,
+				cacheWrite: 0,
+				totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "toolUse",
+			timestamp: Date.now(),
+		};
+		const toolResult: ToolResultMessage = {
+			role: "toolResult",
+			toolCallId: "call_search",
+			toolName: "web_search",
+			content: [{ type: "text", text: '{"results":[]}' }],
+			isError: false,
+			timestamp: Date.now(),
+		};
+		let payload: unknown;
+
+		await streamSimple(
+			model,
+			{
+				messages: [
+					{ role: "user", content: "今日新闻", timestamp: Date.now() },
+					assistantMessage,
+					toolResult,
+					{ role: "user", content: "你好", timestamp: Date.now() },
+				],
+			},
+			{
+				apiKey: "test",
+				reasoning: "high",
+				onPayload: (params: unknown) => {
+					payload = params;
+				},
+			},
+		).result();
+
+		const params = (payload ?? mockState.lastParams) as { messages?: Array<Record<string, unknown>> };
+		const bridge = params.messages?.find(
+			(message, index, messages) =>
+				message.role === "assistant" &&
+				message.content === "I have processed the tool results." &&
+				messages?.[index - 1]?.role === "tool" &&
+				messages?.[index + 1]?.role === "user",
+		);
+		expect(bridge).toEqual({
+			role: "assistant",
+			content: "I have processed the tool results.",
+			reasoning_content: "",
+		});
+	});
+
 	it("normalizes OpenCode Go reasoning deltas to reasoning_content for replay", async () => {
 		mockState.chunks = [
 			{

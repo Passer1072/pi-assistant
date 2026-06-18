@@ -1,18 +1,57 @@
+# Dependencies
 node_modules/
+packages/*/node_modules/
+
+# Build outputs
 dist/
-*.log
-.DS_Store
-*.tsbuildinfo
-# packages/*/node_modules/
 packages/*/dist/
 packages/*/dist-chrome/
 packages/*/dist-firefox/
+packages/desktop-assistant/renderer-dist/
+packages/desktop-assistant/out/
+
+# Caches, coverage, and temporary files
+.omx/
+.venv/
+.npm/
+.tmp/
+coverage/
+.nyc_output/
+*.tsbuildinfo
 *.cpuprofile
+compaction-results/
+__pycache__/
+*.py[cod]
 
-# Environment
+# Logs and debug artifacts
+*.log
+tui-debug.log
+syntax.jsonl
+out.jsonl
+pi-*.html
+out.html
+
+# Environment, credentials, and local auth state
 .env
+.env.*
+!.env.example
+auth.json
+packages/desktop-assistant/auth.json
+.pi_config/
+.pi/hf-sessions/
+.pi/hf-sessions-backup/
+.opencode/
 
-# Editor files
+# Desktop Assistant runtime/user data
+save/
+packages/desktop-assistant/data/
+packages/desktop-assistant/save/
+packages/desktop-assistant/bc_*.db
+packages/desktop-assistant/NVIDIA Corporation/
+
+# Editor and OS files
+.DS_Store
+Thumbs.db
 .vscode/
 .zed/
 .idea/
@@ -21,21 +60,14 @@ packages/*/dist-firefox/
 *.swo
 *~
 
-# Package specific
-.npm/
-coverage/
-.nyc_output/
-.pi_config/
-tui-debug.log
-compaction-results/
-.opencode/
-syntax.jsonl
-out.jsonl
-pi-*.html
-out.html
-packages/coding-agent/binaries/
+# Local scratch files
 todo.md
 plans/
-.pi/hf-sessions/
-.pi/hf-sessions-backup/
 collect.sh
+analyze_conv.py
+conv_analysis.txt
+conv_analysis2.txt
+备份/
+
+# Generated binaries
+packages/coding-agent/binaries/

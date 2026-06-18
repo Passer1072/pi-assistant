@@ -1,0 +1,62 @@
+import type { DesktopAssistantSettings, WindowMode } from "../../src/shared/types.ts";
+
+export const SETTINGS_STORAGE_KEY = "pi-settings";
+export const WINDOW_MODE_STORAGE_KEY = "pi-window-mode";
+
+export function persistSettings(settings: DesktopAssistantSettings): void {
+	try {
+		const persistable = {
+			provider: settings.provider,
+			apiConnectionMode: settings.apiConnectionMode,
+			modelId: settings.modelId,
+			thinkingLevel: settings.thinkingLevel,
+			permissionMode: settings.permissionMode,
+			capabilities: settings.capabilities,
+			webSearch: settings.webSearch,
+			voice: settings.voice,
+			tokenSaving: settings.tokenSaving,
+			// Sandbox config is intentionally NOT persisted here: it is authoritative in
+			// the main process (agent/sandbox.json). Mirroring it in localStorage would
+			// let the renderer re-push stale values on startup and clobber sandbox.json.
+			wakeWord: settings.wakeWord,
+			voiceLanguage: settings.voiceLanguage,
+			ttsEnabled: settings.ttsEnabled,
+			apiBaseUrl: settings.apiBaseUrl,
+			deepseekRelayModels: settings.deepseekRelayModels,
+			customModelId: settings.customModelId,
+		};
+		localStorage.setItem(SETTINGS_STORAGE_KEY, JSON.stringify(persistable));
+	} catch {
+		// Ignore storage errors.
+	}
+}
+export function loadStoredSettings(): Partial<DesktopAssistantSettings> | undefined {
+	try {
+		const raw = localStorage.getItem(SETTINGS_STORAGE_KEY);
+		if (!raw) return undefined;
+		const parsed = JSON.parse(raw) as unknown;
+		if (typeof parsed !== "object" || parsed === null) return undefined;
+		// Drop any sandbox key that older builds wrote, so the renderer never pushes
+		// stale sandbox settings over the main-process authority on startup.
+		delete (parsed as Record<string, unknown>).sandbox;
+		return parsed as Partial<DesktopAssistantSettings>;
+	} catch {
+		return undefined;
+	}
+}
+
+export function persistWindowMode(mode: WindowMode): void {
+	try {
+		localStorage.setItem(WINDOW_MODE_STORAGE_KEY, mode);
+	} catch {
+		// Ignore storage errors.
+	}
+}
+
+export function loadWindowMode(): WindowMode {
+	try {
+		return localStorage.getItem(WINDOW_MODE_STORAGE_KEY) === "expanded" ? "expanded" : "compact";
+	} catch {
+		return "compact";
+	}
+}

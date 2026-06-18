@@ -78,6 +78,35 @@ describe("Agent", () => {
 		expect(agent.state.thinkingLevel).toBe("low");
 	});
 
+	it("passes completed turn context to prepareNextTurn", async () => {
+		let seenMessageText = "";
+		let seenNewMessageCount = 0;
+		const agent = new Agent({
+			prepareNextTurn: (context) => {
+				if (context.message.role === "assistant") {
+					seenMessageText = context.message.content
+						.filter((content) => content.type === "text")
+						.map((content) => content.text)
+						.join("");
+				}
+				seenNewMessageCount = context.newMessages.length;
+				return undefined;
+			},
+			streamFn: () => {
+				const stream = new MockAssistantStream();
+				queueMicrotask(() => {
+					stream.push({ type: "done", reason: "stop", message: createAssistantMessage("done") });
+				});
+				return stream;
+			},
+		});
+
+		await agent.prompt("hello");
+
+		expect(seenMessageText).toBe("done");
+		expect(seenNewMessageCount).toBe(2);
+	});
+
 	it("should subscribe to events", () => {
 		const agent = new Agent();
 

@@ -120,6 +120,8 @@ export function parseSkillBlock(text: string): ParsedSkillBlock | null {
 }
 
 /** Session-specific events that extend the core AgentEvent */
+export type CompactionReason = "manual" | "threshold" | "overflow" | "token_saving";
+
 export type AgentSessionEvent =
 	| Exclude<AgentEvent, { type: "agent_end" }>
 	| {
@@ -132,12 +134,12 @@ export type AgentSessionEvent =
 			steering: readonly string[];
 			followUp: readonly string[];
 	  }
-	| { type: "compaction_start"; reason: "manual" | "threshold" | "overflow" }
+	| { type: "compaction_start"; reason: CompactionReason }
 	| { type: "session_info_changed"; name: string | undefined }
 	| { type: "thinking_level_changed"; level: ThinkingLevel }
 	| {
 			type: "compaction_end";
-			reason: "manual" | "threshold" | "overflow";
+			reason: CompactionReason;
 			result: CompactionResult | undefined;
 			aborted: boolean;
 			willRetry: boolean;
@@ -787,6 +789,15 @@ export class AgentSession {
 
 	getToolDefinition(name: string): ToolDefinition | undefined {
 		return this._toolDefinitions.get(name)?.definition;
+	}
+
+	/**
+	 * Replace SDK custom tools and rebuild the registry.
+	 * Changes take effect on the next agent turn.
+	 */
+	setCustomTools(customTools: ToolDefinition[]): void {
+		this._customTools = [...customTools];
+		this._refreshToolRegistry({ activeToolNames: this.getActiveToolNames() });
 	}
 
 	/**
@@ -1762,6 +1773,17 @@ export class AgentSession {
 	}
 
 	/**
+	 * Compact from inside an active agent run without aborting the current loop.
+	 * Intended for send-context hygiene that runs between assistant turns.
+	 */
+	async compactForTokenSaving(customInstructions?: string): Promise<boolean> {
+		const entryCountBefore = this.sessionManager.getEntries().length;
+		const shouldContinue = await this._runAutoCompaction("token_saving", false, customInstructions);
+		const newEntries = this.sessionManager.getEntries().slice(entryCountBefore);
+		return shouldContinue || newEntries.some((entry) => entry.type === "compaction");
+	}
+
+	/**
 	 * Cancel in-progress compaction (manual or auto).
 	 */
 	abortCompaction(): void {
@@ -1870,7 +1892,11 @@ export class AgentSession {
 	/**
 	 * Internal: Run auto-compaction with events.
 	 */
-	private async _runAutoCompaction(reason: "overflow" | "threshold", willRetry: boolean): Promise<boolean> {
+	private async _runAutoCompaction(
+		reason: "overflow" | "threshold" | "token_saving",
+		willRetry: boolean,
+		customInstructions?: string,
+	): Promise<boolean> {
 		const settings = this.settingsManager.getCompactionSettings();
 
 		this._emit({ type: "compaction_start", reason });
@@ -1930,7 +1956,7 @@ export class AgentSession {
 					type: "session_before_compact",
 					preparation,
 					branchEntries: pathEntries,
-					customInstructions: undefined,
+					customInstructions,
 					signal: this._autoCompactionAbortController.signal,
 				})) as SessionBeforeCompactResult | undefined;
 
@@ -1969,7 +1995,7 @@ export class AgentSession {
 					this.model,
 					apiKey,
 					headers,
-					undefined,
+					customInstructions,
 					this._autoCompactionAbortController.signal,
 					this.thinkingLevel,
 					this.agent.streamFn,

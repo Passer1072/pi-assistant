@@ -1,0 +1,45 @@
+{
+	"name": "@earendil-works/pi-desktop-assistant",
+	"version": "0.78.0",
+	"description": "Windows-first AI desktop assistant client built on the Pi agent runtime",
+	"type": "module",
+	"main": "./dist/main/main/index.js",
+	"types": "./dist/main/index.d.ts",
+	"scripts": {
+		"clean": "shx rm -rf dist renderer-dist",
+		"build:preload": "node -e \"require('esbuild').buildSync({entryPoints:['src/main/preload.ts'],bundle:true,format:'cjs',outfile:'dist/main/main/preload.cjs',external:['electron'],logLevel:'info'})\"",
+		"build": "tsgo -p tsconfig.build.json && npm run build:preload && vite build",
+		"dev": "vite --host 127.0.0.1",
+		"electron": "electron --no-deprecation .",
+		"fetch:wake": "node scripts/fetch-oww-runtime.mjs",
+		"fetch:kws": "node scripts/fetch-kws-model.mjs",
+		"test": "vitest --run"
+	},
+	"dependencies": {
+		"@earendil-works/pi-ai": "^0.78.0",
+		"@earendil-works/pi-coding-agent": "^0.78.0",
+		"@modelcontextprotocol/sdk": "1.29.0",
+		"@nut-tree-fork/nut-js": "4.2.6",
+		"electron": "42.3.0",
+		"lucide-react": "1.17.0",
+		"node-window-manager": "2.2.4",
+		"onnxruntime-web": "1.20.1",
+		"pinyin-pro": "3.28.1",
+		"react": "19.2.6",
+		"react-dom": "19.2.6",
+		"sherpa-onnx-node": "1.13.2",
+		"typebox": "1.1.38",
+		"vosk-browser": "0.0.8",
+		"zod": "3.25.76"
+	},
+	"devDependencies": {
+		"@types/node": "24.12.4",
+		"@types/react": "19.2.7",
+		"@types/react-dom": "19.2.3",
+		"vite": "8.0.14",
+		"vitest": "3.2.4"
+	},
+	"engines": {
+		"node": ">=22.19.0"
+	}
+}

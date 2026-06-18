@@ -775,10 +775,7 @@ export function convertMessages(
 		// Some providers don't allow user messages directly after tool results
 		// Insert a synthetic assistant message to bridge the gap
 		if (compat.requiresAssistantAfterToolResult && lastRole === "toolResult" && msg.role === "user") {
-			params.push({
-				role: "assistant",
-				content: "I have processed the tool results.",
-			});
+			params.push(createToolResultBridgeAssistantMessage(model, compat));
 		}
 
 		if (msg.role === "user") {
@@ -955,10 +952,7 @@ export function convertMessages(
 
 			if (imageBlocks.length > 0) {
 				if (compat.requiresAssistantAfterToolResult) {
-					params.push({
-						role: "assistant",
-						content: "I have processed the tool results.",
-					});
+					params.push(createToolResultBridgeAssistantMessage(model, compat));
 				}
 
 				params.push({
@@ -982,6 +976,20 @@ export function convertMessages(
 	}
 
 	return params;
+}
+
+function createToolResultBridgeAssistantMessage(
+	model: Model<"openai-completions">,
+	compat: ResolvedOpenAICompletionsCompat,
+): ChatCompletionAssistantMessageParam {
+	const message: ChatCompletionAssistantMessageParam = {
+		role: "assistant",
+		content: "I have processed the tool results.",
+	};
+	if (compat.requiresReasoningContentOnAssistantMessages && model.reasoning) {
+		(message as { reasoning_content?: string }).reasoning_content = "";
+	}
+	return message;
 }
 
 function convertTools(
@@ -1107,7 +1115,7 @@ function detectCompat(model: Model<"openai-completions">): ResolvedOpenAIComplet
 		supportsUsageInStreaming: true,
 		maxTokensField: useMaxTokens ? "max_tokens" : "max_completion_tokens",
 		requiresToolResultName: false,
-		requiresAssistantAfterToolResult: false,
+		requiresAssistantAfterToolResult: isDeepSeek,
 		requiresThinkingAsText: false,
 		requiresReasoningContentOnAssistantMessages: isDeepSeek,
 		thinkingFormat: isDeepSeek
