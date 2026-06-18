@@ -15,8 +15,6 @@ This repository contains the Electron desktop client, React renderer, local auto
 - Built-in MCP examples for browser control, Forge, NetEase Music, and Steam.
 - Project-level checks inherited from the Pi monorepo runtime.
 
-Local credentials, chat archives, user-created personal skill data, databases, build outputs, and dependency folders are intentionally excluded from Git.
-
 ## Requirements
 
 Use Windows 10/11.
