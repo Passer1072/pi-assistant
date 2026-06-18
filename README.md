@@ -1,89 +1,202 @@
-<p align="center">
-  <a href="https://pi.dev">
-    <img alt="pi logo" src="https://pi.dev/logo-auto.svg" width="128">
-  </a>
-</p>
-<p align="center">
-  <a href="https://discord.com/invite/3cU7Bz4UPx"><img alt="Discord" src="https://img.shields.io/badge/discord-community-5865F2?style=flat-square&logo=discord&logoColor=white" /></a>
-</p>
-<p align="center">
-  <a href="https://pi.dev">pi.dev</a> domain graciously donated by
-  <br /><br />
-  <a href="https://exe.dev"><img src="packages/coding-agent/docs/images/exy.png" alt="Exy mascot" width="48" /><br />exe.dev</a>
-</p>
+﻿# Desktop Assistant
 
-> New issues and PRs from new contributors are auto-closed by default. Maintainers review auto-closed issues daily. See [CONTRIBUTING.md](CONTRIBUTING.md).
+Windows-first AI desktop assistant built on the Pi agent runtime.
 
----
+This repository contains the Electron desktop client, React renderer, local automation tools, voice/wake-word assets, MCP server integrations, and test coverage needed to run the assistant from source.
 
-# Pi Agent Harness Mono Repo
+## What Is Included
 
-This is the home of the pi agent harness project including our self extensible coding agent.
+- Desktop app package: `packages/desktop-assistant`
+- Launch helper: `start_desktop_assistant.py`
+- Runtime model assets required by the current voice/wake-word flow:
+  - `packages/desktop-assistant/resources/kws/*.onnx`
+  - `packages/desktop-assistant/resources/kws/*.txt`
+  - `packages/desktop-assistant/resources/public/models/**`
+- Built-in MCP examples for browser control, Forge, NetEase Music, and Steam.
+- Project-level checks inherited from the Pi monorepo runtime.
 
-* **[@earendil-works/pi-coding-agent](packages/coding-agent)**: Interactive coding agent CLI
-* **[@earendil-works/pi-agent-core](packages/agent)**: Agent runtime with tool calling and state management
-* **[@earendil-works/pi-ai](packages/ai)**: Unified multi-provider LLM API (OpenAI, Anthropic, Google, …)
+Local credentials, chat archives, user-created personal skill data, databases, build outputs, and dependency folders are intentionally excluded from Git.
 
-To learn more about pi:
+## Requirements
 
-* [Visit pi.dev](https://pi.dev), the project website with demos
-* [Read the documentation](https://pi.dev/docs/latest), but you can also ask the agent to explain itself
+Use Windows 10/11.
 
-## Share your OSS coding agent sessions
+Install:
 
-If you use pi or other coding agents for open source work, please share your sessions.
+- Git
+- Node.js `>=22.19.0`
+- npm, bundled with Node.js
+- Python 3.10+ for `start_desktop_assistant.py`
 
-Public OSS session data helps improve coding agents with real-world tasks, tool use, failures, and fixes instead of toy benchmarks.
+Check the tools:
 
-For the full explanation, see [this post on X](https://x.com/badlogicgames/status/2037811643774652911).
-
-To publish sessions, use [`badlogic/pi-share-hf`](https://github.com/badlogic/pi-share-hf). Read its README.md for setup instructions. All you need is a Hugging Face account, the Hugging Face CLI, and `pi-share-hf`.
-
-You can also watch [this video](https://x.com/badlogicgames/status/2041151967695634619), where I show how I publish my `pi-mono` sessions.
-
-I regularly publish my own `pi-mono` work sessions here:
-
-- [badlogicgames/pi-mono on Hugging Face](https://huggingface.co/datasets/badlogicgames/pi-mono)
-
-## All Packages
-
-| Package | Description |
-|---------|-------------|
-| **[@earendil-works/pi-ai](packages/ai)** | Unified multi-provider LLM API (OpenAI, Anthropic, Google, etc.) |
-| **[@earendil-works/pi-agent-core](packages/agent)** | Agent runtime with tool calling and state management |
-| **[@earendil-works/pi-coding-agent](packages/coding-agent)** | Interactive coding agent CLI |
-| **[@earendil-works/pi-tui](packages/tui)** | Terminal UI library with differential rendering |
-
-For Slack/chat automation and workflows see [earendil-works/pi-chat](https://github.com/earendil-works/pi-chat).
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for contribution guidelines and [AGENTS.md](AGENTS.md) for project-specific rules (for both humans and agents).
-
-## Development
-
-```bash
-npm install --ignore-scripts  # Install all dependencies without running lifecycle scripts
-npm run build        # Build all packages
-npm run check        # Lint, format, and type check
-./test.sh            # Run tests (skips LLM-dependent tests without API keys)
-./pi-test.sh         # Run pi from sources (can be run from any directory)
+```powershell
+git --version
+node --version
+npm --version
+python --version
 ```
 
-## Supply-chain hardening
+## Clone
 
-We treat npm dependency changes as reviewed code changes.
+```powershell
+cd C:\pythonProject
+git clone https://github.com/Passer1072/Desktop_Assistant.git
+cd Desktop_Assistant
+```
 
-- Direct external dependencies are pinned to exact versions. Internal workspace packages remain version-ranged.
-- `.npmrc` sets `save-exact=true` and `min-release-age=2` to avoid same-day dependency releases during npm resolution.
-- `package-lock.json` is the dependency ground truth. Pre-commit blocks accidental lockfile commits unless `PI_ALLOW_LOCKFILE_CHANGE=1` is set.
-- `npm run check` verifies pinned direct deps, native TypeScript import compatibility, and the generated coding-agent shrinkwrap.
-- The published CLI package includes `packages/coding-agent/npm-shrinkwrap.json`, generated from the root lockfile, to pin transitive deps for npm users.
-- Release smoke tests use `npm run release:local` to build, pack, and create isolated npm and Bun installs outside the repo before tagging a release.
-- Local release installs, documented npm installs, and `pi update --self` use `--ignore-scripts` where supported.
-- CI installs with `npm ci --ignore-scripts`, and a scheduled GitHub workflow runs `npm audit --omit=dev` plus `npm audit signatures --omit=dev`.
-- Shrinkwrap generation has an explicit allowlist for dependency lifecycle scripts; new lifecycle-script deps fail checks until reviewed.
+## Install And Prepare
 
-## License
+The recommended first-time command is:
 
-MIT
+```powershell
+python .\start_desktop_assistant.py --prepare-only
+```
+
+This command:
+
+1. Installs npm dependencies with `--ignore-scripts --legacy-peer-deps`.
+2. Ensures Electron's runtime binary is downloaded.
+3. Builds the packages needed by the desktop assistant.
+
+The direct manual equivalent is:
+
+```powershell
+npm install --ignore-scripts --legacy-peer-deps
+npm exec --package electron@42.3.0 -- install-electron
+python .\start_desktop_assistant.py --skip-install --rebuild --prepare-only
+```
+
+## Run
+
+After preparation:
+
+```powershell
+python .\start_desktop_assistant.py --skip-install --skip-build
+```
+
+For normal day-to-day use, this is also fine:
+
+```powershell
+python .\start_desktop_assistant.py
+```
+
+It installs missing dependencies, rebuilds when source files are newer than the build output, then starts Electron.
+
+## Development Mode
+
+To run Electron with a Vite renderer dev server:
+
+```powershell
+python .\start_desktop_assistant.py --dev-renderer
+```
+
+The helper sets `DESKTOP_ASSISTANT_DEV_SERVER_URL=http://127.0.0.1:5178` and starts the renderer dev server before launching Electron.
+
+## Configuration
+
+API keys are not committed to this repository.
+
+Set a DeepSeek key in the app settings UI, or set it for the current PowerShell session:
+
+```powershell
+$env:DEEPSEEK_API_KEY = "your-key"
+python .\start_desktop_assistant.py --skip-install --skip-build
+```
+
+Local runtime data is stored outside version control, including:
+
+- `packages/desktop-assistant/auth.json`
+- `packages/desktop-assistant/save/`
+- `packages/desktop-assistant/data/`
+- `packages/desktop-assistant/bc_*.db`
+- `packages/desktop-assistant/dist/`
+- `packages/desktop-assistant/renderer-dist/`
+- `node_modules/`
+
+## Useful Commands
+
+```powershell
+npm run check
+```
+
+Runs formatting, linting, pinned-dependency checks, TypeScript checks, shrinkwrap verification, and browser smoke checks.
+
+```powershell
+npm --workspace @earendil-works/pi-desktop-assistant run test
+```
+
+Runs the Desktop Assistant package tests.
+
+```powershell
+npm --workspace @earendil-works/pi-desktop-assistant run build
+```
+
+Builds only the Desktop Assistant package after shared packages have already been built.
+
+```powershell
+npm run build
+```
+
+Builds all workspace packages.
+
+## MCP
+
+Open Settings, then MCP Manager.
+
+When MCP is enabled, Desktop Assistant starts enabled MCP servers and exposes their tools before normal desktop automation tools. When MCP is disabled, no MCP tools are exposed and started stdio servers are closed.
+
+Minimal external stdio config:
+
+```json
+{
+  "name": "Chrome Controller",
+  "enabled": true,
+  "transport": "stdio",
+  "command": "node",
+  "args": ["C:/tools/chrome-mcp/server.js"],
+  "toolNamePrefix": "chrome",
+  "timeoutMs": 10000
+}
+```
+
+More docs:
+
+- [Desktop Assistant package README](packages/desktop-assistant/README.md)
+- [MCP management](packages/desktop-assistant/docs/mcp.md)
+- [Writing MCP servers](packages/desktop-assistant/docs/mcp-server-authoring.md)
+- [Built-in Desktop Assistant MCP](packages/desktop-assistant/docs/mcp-desktop-assistant-control.md)
+- [Wake word assets and settings](packages/desktop-assistant/docs/wake-word.md)
+
+## Troubleshooting
+
+If `electron` fails because its binary is missing, run:
+
+```powershell
+npm exec --package electron@42.3.0 -- install-electron
+```
+
+If `python` is not found, try:
+
+```powershell
+py .\start_desktop_assistant.py --prepare-only
+```
+
+If native desktop automation dependencies fail on install, confirm the Node version first:
+
+```powershell
+node --version
+```
+
+Use Node `>=22.19.0`.
+
+If a clean clone does not build, run:
+
+```powershell
+npm run check
+python .\start_desktop_assistant.py --rebuild --prepare-only
+```
+
+## Repository Hygiene
+
+Do not commit generated or local runtime files. The `.gitignore` keeps local state and credentials out while preserving the model resources required for a fresh clone to run.

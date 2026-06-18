@@ -75,6 +75,17 @@ def build_output_is_current() -> bool:
     return min(main_output.stat().st_mtime, renderer_output.stat().st_mtime) >= source_mtime
 
 
+def electron_runtime_exists() -> bool:
+    electron_dist = ROOT / "node_modules" / "electron" / "dist"
+    return electron_dist.exists() and any(electron_dist.iterdir())
+
+
+def ensure_electron_runtime(npm: str) -> None:
+    if electron_runtime_exists():
+        return
+    run([npm, "exec", "--package", "electron@42.3.0", "--", "install-electron"])
+
+
 def build_offline(npm: str) -> None:
     tsgo = ROOT / "node_modules" / ".bin" / ("tsgo.cmd" if os.name == "nt" else "tsgo")
     if not tsgo.exists():
@@ -95,6 +106,7 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--skip-build", action="store_true", help="Do not build before launching Electron.")
     parser.add_argument("--rebuild", action="store_true", help="Force a full npm run build before launching Electron.")
     parser.add_argument("--dev-renderer", action="store_true", help="Start Vite for the renderer and point Electron at it.")
+    parser.add_argument("--prepare-only", action="store_true", help="Install dependencies and build, then exit without launching Electron.")
     return parser.parse_args()
 
 
@@ -104,6 +116,8 @@ def main() -> int:
 
     if not args.skip_install and not dependencies_installed():
         run([npm, "install", "--ignore-scripts", "--legacy-peer-deps"])
+
+    ensure_electron_runtime(npm)
 
     has_build_output = build_output_exists()
     build_is_current = build_output_is_current()
@@ -115,6 +129,10 @@ def main() -> int:
         build_offline(npm)
     elif build_is_current:
         print("Desktop assistant build output exists; skipping rebuild. Use --rebuild to force it.")
+
+    if args.prepare_only:
+        print("Desktop assistant is prepared. Run without --prepare-only to launch Electron.")
+        return 0
 
     env = os.environ.copy()
     vite_process: subprocess.Popen[str] | None = None
