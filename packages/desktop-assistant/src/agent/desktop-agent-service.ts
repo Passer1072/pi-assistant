@@ -80,6 +80,16 @@ import {
 	type McpServerListResponse,
 	type McpServerStatus,
 	type McpServerUpsertRequest,
+	type MemoCompleteRequest,
+	type MemoCreateRequest,
+	type MemoDeleteRequest,
+	type MemoItem,
+	type MemoListRequest,
+	type MemoListResponse,
+	type MemoSetReminderRequest,
+	type MemoSnoozeRequest,
+	type MemoSummary,
+	type MemoUpdateRequest,
 	type PendingConfirmation,
 	type PendingPromptAttachment,
 	type PersonalSkillArchiveRequest,
@@ -141,6 +151,9 @@ import {
 	syncDeepSeekRuntimeAuth,
 	validateDeepSeekApiKey,
 } from "./deepseek.ts";
+import { MemoReminderScheduler } from "./memo-reminder-scheduler.ts";
+import { MemoRepositoryService } from "./memo-repository.ts";
+import { createMemoToolDefinitions, MEMO_TOOL_NAMES, type MemoToolHost } from "./memo-tools.ts";
 import { MemoryStore } from "./memory-store.ts";
 import { PersonalSkillRepositoryService, selectExplicitPersonalSkillId } from "./personal-skill-repository.ts";
 import { createPersonalSkillToolDefinitions, PERSONAL_SKILL_TOOL_NAMES } from "./personal-skill-tools.ts";
@@ -177,6 +190,8 @@ export interface DesktopAgentServiceOptions {
 	sandboxRoot?: string;
 	/** Real OS path overrides used to resolve sandbox path tokens (main passes Documents/Desktop/…). */
 	sandboxPaths?: Partial<SandboxPathContext>;
+	/** Directory for the memo/to-do JSON store (main passes userData/memos). Defaults to agentDir/memos. */
+	memoDir?: string;
 }
 
 type Listener = (event: DesktopAssistantEvent) => void;
@@ -215,6 +230,8 @@ export class DesktopAgentService {
 	private sandboxManager: SandboxManager;
 	private coordinator: ConversationArchiveCoordinator;
 	private memoryStore: MemoryStore;
+	private memoRepository: MemoRepositoryService;
+	private memoReminderScheduler: MemoReminderScheduler;
 	private personalSkillRepository: PersonalSkillRepositoryService;
 	private mcpManager: McpClientManager;
 	private softwarePluginManager: SoftwarePluginManager;
@@ -290,6 +307,8 @@ export class DesktopAgentService {
 			onStatus: (status) => this.emit({ type: "sandbox_status", sandboxStatus: status }),
 		});
 		this.memoryStore = new MemoryStore(options.cwd, options.saveDir);
+		this.memoRepository = new MemoRepositoryService(options.memoDir ?? join(options.agentDir, "memos"));
+		this.memoReminderScheduler = new MemoReminderScheduler((memoId, missed) => this.onMemoReminder(memoId, missed));
 		this.personalSkillRepository = new PersonalSkillRepositoryService(options.cwd);
 		this.softwarePluginManager = new SoftwarePluginManager({
 			agentDir: options.agentDir,
@@ -552,6 +571,7 @@ export class DesktopAgentService {
 			repository: this.personalSkillRepository,
 			getSourceSessionId: () => this.context.session?.sessionId,
 		});
+		const memoTools = createMemoToolDefinitions(this.memoHost());
 		const ws = this.settings.webSearch;
 		const webTools = createWebTools({
 			mode: ws?.mode ?? "auto",
@@ -561,7 +581,7 @@ export class DesktopAgentService {
 			searxngUrl: ws?.searxngUrl,
 			network: this.settings.sandbox.enabled ? this.settings.sandbox.network : undefined,
 		});
-		return [...mcpTools, ...tokenSavingTools, ...desktopTools, ...personalSkillTools, ...webTools];
+		return [...mcpTools, ...tokenSavingTools, ...desktopTools, ...personalSkillTools, ...webTools, ...memoTools];
 	}
 
 	/**
@@ -574,6 +594,7 @@ export class DesktopAgentService {
 			...(this.settings.tokenSaving.enabled ? [...BROWSER_SNAPSHOT_READ_TOOL_NAMES] : []),
 			...getActiveDesktopToolNames(this.settings.capabilities),
 			...PERSONAL_SKILL_TOOL_NAMES,
+			...MEMO_TOOL_NAMES,
 			...(this.settings.webSearch?.mode !== "off" ? WEB_TOOL_NAMES : []),
 		];
 		// Settings are global — propagate the refreshed tool set to every live session.
@@ -624,6 +645,7 @@ export class DesktopAgentService {
 					...(this.settings.tokenSaving.enabled ? [...BROWSER_SNAPSHOT_READ_TOOL_NAMES] : []),
 					...getActiveDesktopToolNames(this.settings.capabilities),
 					...PERSONAL_SKILL_TOOL_NAMES,
+					...MEMO_TOOL_NAMES,
 					...(this.settings.webSearch?.mode !== "off" ? WEB_TOOL_NAMES : []),
 				],
 				noTools: "builtin",
@@ -644,6 +666,8 @@ export class DesktopAgentService {
 	}
 
 	async initialize(): Promise<void> {
+		// Arm reminders for any memo whose time is still pending; missed ones fire now.
+		this.memoReminderScheduler.rescheduleAll(this.memoRepository.all());
 		// Kick off sandbox initialization asynchronously — it must not block chat.
 		// Skipped under the test runner to keep the suite hermetic (the init probe
 		// spawns PowerShell); SandboxManager tests drive init() directly instead.
@@ -818,6 +842,93 @@ export class DesktopAgentService {
 		const updated = this.memoryStore.update(id, update);
 		this.emit({ type: "snapshot", snapshot: this.snapshot() });
 		return updated;
+	}
+
+	// ── 备忘录 / 待办 ──────────────────────────────────────────────────────────
+	// All writes go through these methods (IPC handlers and AI tools share them)
+	// so the reminder scheduler and the renderer "memo_changed" feed stay in sync.
+
+	/** The subset of this service the memo AI tools drive. */
+	private memoHost(): MemoToolHost {
+		return {
+			createMemo: (request) => this.createMemo(request),
+			updateMemo: (request) => this.updateMemo(request),
+			completeMemo: (request) => this.completeMemo(request),
+			deleteMemo: (request) => this.deleteMemo(request),
+			setMemoReminder: (request) => this.setMemoReminder(request),
+			listMemos: (request) => this.listMemos(request),
+			searchMemos: (query, limit) => this.memoRepository.search(query, limit),
+			getSourceSessionId: () => this.context.session?.sessionId,
+		};
+	}
+
+	listMemos(request: MemoListRequest = {}): MemoListResponse {
+		return this.memoRepository.list(request);
+	}
+
+	getMemoSummary(): MemoSummary {
+		return this.memoRepository.summary();
+	}
+
+	createMemo(request: MemoCreateRequest): MemoItem {
+		const memo = this.memoRepository.create(request);
+		this.memoReminderScheduler.set(memo);
+		this.emitMemoChanged();
+		return memo;
+	}
+
+	updateMemo(request: MemoUpdateRequest): MemoItem {
+		const memo = this.memoRepository.update(request);
+		this.memoReminderScheduler.set(memo);
+		this.emitMemoChanged();
+		return memo;
+	}
+
+	completeMemo(request: MemoCompleteRequest): MemoItem {
+		const memo = this.memoRepository.complete(request.id, request.completed ?? true);
+		// set() cancels any existing timer first, then re-arms only if the (possibly
+		// rolled-forward recurring) memo is active with a pending reminder.
+		this.memoReminderScheduler.set(memo);
+		this.emitMemoChanged();
+		return memo;
+	}
+
+	snoozeMemo(request: MemoSnoozeRequest): MemoItem {
+		const memo = this.memoRepository.snooze(request.id, request.until);
+		this.memoReminderScheduler.set(memo);
+		this.emitMemoChanged();
+		return memo;
+	}
+
+	setMemoReminder(request: MemoSetReminderRequest): MemoItem {
+		const memo = this.memoRepository.setReminder(request.id, request.reminderAt);
+		this.memoReminderScheduler.set(memo);
+		this.emitMemoChanged();
+		return memo;
+	}
+
+	deleteMemo(request: MemoDeleteRequest): boolean {
+		this.memoReminderScheduler.cancel(request.id);
+		const deleted = this.memoRepository.delete(request.id);
+		this.emitMemoChanged();
+		return deleted;
+	}
+
+	private emitMemoChanged(): void {
+		this.emit({ type: "memo_changed", memoSummary: this.memoRepository.summary() });
+	}
+
+	/** Scheduler callback: a memo's reminder time arrived (missed = fired late on startup). */
+	private onMemoReminder(memoId: string, missed: boolean): void {
+		const memo = this.memoRepository.markReminderFired(memoId, missed);
+		if (!memo) return;
+		this.emit({ type: "memo_reminder", memo, memoSummary: this.memoRepository.summary() });
+		// AI 主动开口：仅在聚焦会话空闲时插入一句提醒气泡，避免打断正在进行的回复。
+		if (!this.context.isBusy) {
+			const tag = memo.reminderMissed ? "提醒（错过）" : "提醒";
+			const body = memo.notes ? `\n${memo.notes}` : "";
+			this.context.pushMessage("assistant", `⏰ ${tag}：${memo.title}${body}`);
+		}
 	}
 
 	async updateConversationThinking(enabled: boolean, sessionId?: string): Promise<DesktopAssistantSnapshot> {
@@ -1367,6 +1478,7 @@ export class DesktopAgentService {
 			apiKeyStatus: this.apiKeyStatus,
 			isRunning: fragment.isRunning,
 			streamingText: fragment.streamingText,
+			streamingThinking: fragment.streamingThinking,
 			messages: fragment.messages,
 			timeline: fragment.timeline,
 			pendingConfirmations: fragment.pendingConfirmations,
@@ -1377,6 +1489,7 @@ export class DesktopAgentService {
 			lastInjectedMemoryCount: fragment.lastInjectedMemoryCount,
 			contextUsage: fragment.contextUsage,
 			sandboxStatus: this.sandboxManager.getStatus(),
+			memoSummary: this.memoRepository.summary(),
 		};
 	}
 
@@ -1553,25 +1666,36 @@ export class DesktopAgentService {
 			return undefined;
 		}
 
+		// Pick the cheapest valid model for the current connection.
+		//
+		// Official mode: the built-in flash id IS the API model name, so use it directly.
+		// Relay mode: the relay exposes its own model ids — the built-in `deepseek-v4-flash`
+		// id usually does not exist there and would 400 (the previous `getDeepSeekRuntimeModelId`
+		// "fallback" was dead code because relay mode never throws for a non-empty id). Prefer a
+		// configured flash-like relay model for cost, otherwise reuse the active model id, which
+		// is known to work for the running conversation.
 		let modelId: string;
-		try {
-			modelId = getDeepSeekRuntimeModelId(connection.mode, DEEPSEEK_FLASH_MODEL);
-		} catch {
+		if (connection.mode === "relay") {
+			const relayModels = this.settings.deepseekRelayModels ?? [];
+			const flashRelayModel = relayModels.find((model) => /flash/i.test(model.id));
+			const candidate = flashRelayModel?.id ?? this.settings.modelId;
 			try {
-				modelId = getDeepSeekRuntimeModelId(connection.mode, this.settings.modelId);
+				modelId = getDeepSeekRuntimeModelId(connection.mode, candidate);
 			} catch (error) {
 				input.onDiagnostic?.({
 					level: "error",
 					title: "skipped because model resolution failed",
 					details: {
 						connectionMode: connection.mode,
-						preferredModelId: DEEPSEEK_FLASH_MODEL,
+						candidateModelId: candidate,
 						settingsModelId: this.settings.modelId,
 						error: describeUnknownError(error),
 					},
 				});
 				return undefined;
 			}
+		} else {
+			modelId = DEEPSEEK_FLASH_MODEL;
 		}
 
 		input.onDiagnostic?.({
@@ -1677,10 +1801,13 @@ export class DesktopAgentService {
 
 const VOLATILE_EVENT_TYPES = new Set<DesktopAssistantEvent["type"]>([
 	"streaming_text",
+	"streaming_thinking",
 	"agent_event",
 	"snapshot",
 	"session_status",
 	"session_notification",
+	"memo_changed",
+	"memo_reminder",
 ]);
 
 export function resolveSystemOperationSkillFile(cwd: string): string {

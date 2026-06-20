@@ -50,6 +50,25 @@ describe("conversation title generation", () => {
 		);
 	});
 
+	it("always disables deep thinking so the short title budget is not spent reasoning", async () => {
+		const fetchMock = vi.fn(async () => {
+			return new Response(JSON.stringify({ choices: [{ message: { content: "项目计划" } }] }), {
+				status: 200,
+			});
+		});
+		vi.stubGlobal("fetch", fetchMock);
+
+		await generateConversationTitle({
+			baseUrl: "https://api.example.com/v1",
+			apiKey: "test-key",
+			modelId: "deepseek-v4-flash",
+			userMessage: "帮我规划项目",
+		});
+
+		const body = JSON.parse(((fetchMock.mock.calls[0] as unknown[])?.[1] as RequestInit).body as string);
+		expect(body.thinking).toEqual({ type: "disabled" });
+	});
+
 	it("emits diagnostics around a successful title request", async () => {
 		vi.stubGlobal(
 			"fetch",

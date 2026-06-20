@@ -35,6 +35,15 @@ import {
 	type McpServerListResponse,
 	type McpServerStatus,
 	type McpServerUpsertRequest,
+	type MemoCompleteRequest,
+	type MemoCreateRequest,
+	type MemoDeleteRequest,
+	type MemoItem,
+	type MemoListRequest,
+	type MemoListResponse,
+	type MemoSetReminderRequest,
+	type MemoSnoozeRequest,
+	type MemoUpdateRequest,
 	type PersonalSkillArchiveRequest,
 	type PersonalSkillFileView,
 	type PersonalSkillListResponse,
@@ -126,6 +135,13 @@ export interface DesktopAssistantApi {
 	deleteGlobalMemory(request: GlobalMemoryDeleteRequest): Promise<GlobalMemoryListResponse>;
 	clearGlobalMemories(): Promise<GlobalMemoryClearResponse>;
 	updateGlobalMemory(request: GlobalMemoryUpdateRequest): Promise<GlobalMemoryEntry | undefined>;
+	listMemos(request?: MemoListRequest): Promise<MemoListResponse>;
+	createMemo(request: MemoCreateRequest): Promise<MemoItem>;
+	updateMemo(request: MemoUpdateRequest): Promise<MemoItem>;
+	completeMemo(request: MemoCompleteRequest): Promise<MemoItem>;
+	snoozeMemo(request: MemoSnoozeRequest): Promise<MemoItem>;
+	setMemoReminder(request: MemoSetReminderRequest): Promise<MemoItem>;
+	deleteMemo(request: MemoDeleteRequest): Promise<boolean>;
 	getAppLaunchCache(): Promise<AppLaunchCacheView>;
 	clearAppLaunchCache(): Promise<AppLaunchCacheView>;
 	deleteAppLaunchCacheEntry(request: DeleteAppLaunchCacheEntryRequest): Promise<AppLaunchCacheView>;
@@ -137,6 +153,7 @@ export interface DesktopAssistantApi {
 	openSandboxFolder(): Promise<void>;
 	openSandboxSettingsWindow(): Promise<void>;
 	openMcpManagerWindow(): Promise<void>;
+	openToolsetManagerWindow(): Promise<void>;
 	openPluginManagerWindow(): Promise<void>;
 	openPersonalSkillManagerWindow(): Promise<void>;
 	openLogWindow(): Promise<void>;
@@ -163,6 +180,7 @@ export interface DesktopAssistantApi {
 	minimizeWindow(): void;
 	closeWindow(): void;
 	setWindowMode(mode: WindowMode, animate?: boolean): void;
+	setWindowAlwaysOnTop(enabled: boolean): void;
 }
 
 const api: DesktopAssistantApi = {
@@ -290,6 +308,15 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.updateGlobalMemory, request) as Promise<
 			GlobalMemoryEntry | undefined
 		>,
+	listMemos: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoList, request ?? {}) as Promise<MemoListResponse>,
+	createMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoCreate, request) as Promise<MemoItem>,
+	updateMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoUpdate, request) as Promise<MemoItem>,
+	completeMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoComplete, request) as Promise<MemoItem>,
+	snoozeMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoSnooze, request) as Promise<MemoItem>,
+	setMemoReminder: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoSetReminder, request) as Promise<MemoItem>,
+	deleteMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoDelete, request) as Promise<boolean>,
 	getAppLaunchCache: () =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.getAppLaunchCache) as Promise<AppLaunchCacheView>,
 	clearAppLaunchCache: () =>
@@ -307,6 +334,8 @@ const api: DesktopAssistantApi = {
 	openSandboxSettingsWindow: () =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openSandboxSettingsWindow) as Promise<void>,
 	openMcpManagerWindow: () => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openMcpManagerWindow) as Promise<void>,
+	openToolsetManagerWindow: () =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openToolsetManagerWindow) as Promise<void>,
 	openPluginManagerWindow: () =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openPluginManagerWindow) as Promise<void>,
 	openPersonalSkillManagerWindow: () =>
@@ -365,6 +394,7 @@ const api: DesktopAssistantApi = {
 	closeWindow: () => ipcRenderer.send("desktop-assistant:window-close"),
 	setWindowMode: (mode, animate = true) =>
 		ipcRenderer.send(DESKTOP_ASSISTANT_CHANNELS.windowSetMode, { mode, animate }),
+	setWindowAlwaysOnTop: (enabled) => ipcRenderer.send(DESKTOP_ASSISTANT_CHANNELS.windowSetAlwaysOnTop, { enabled }),
 };
 
 contextBridge.exposeInMainWorld("desktopAssistant", api);

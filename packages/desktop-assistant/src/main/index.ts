@@ -20,6 +20,7 @@ const windows = new Set<BrowserWindow>();
 const preloadPath = join(__dirname, "preload.cjs");
 let appLaunchCacheWindow: BrowserWindow | undefined;
 let mcpManagerWindow: BrowserWindow | undefined;
+let toolsetManagerWindow: BrowserWindow | undefined;
 let pluginManagerWindow: BrowserWindow | undefined;
 let personalSkillManagerWindow: BrowserWindow | undefined;
 let serviceLogWindow: BrowserWindow | undefined;
@@ -64,6 +65,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
 		cwd: process.cwd(),
 		saveDir: join(app.getPath("userData"), "conversations"),
 		agentDir: join(app.getPath("userData"), "agent"),
+		memoDir: join(app.getPath("userData"), "memos"),
 		host: createSerializedDesktopHost(new WindowsDesktopAutomationHost(psService), desktopActionScheduler),
 		openMcpManagerWindow: () => openMcpManagerWindow(),
 		openPersonalSkillManagerWindow: () => openPersonalSkillManagerWindow(),
@@ -90,6 +92,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
 		}),
 		openAppLaunchCacheWindow: () => openAppLaunchCacheWindow(service.getAppLaunchCache()),
 		openMcpManagerWindow: () => openMcpManagerWindow(),
+		openToolsetManagerWindow: () => openToolsetManagerWindow(),
 		openPluginManagerWindow: () => openPluginManagerWindow(),
 		openPersonalSkillManagerWindow: () => openPersonalSkillManagerWindow(),
 		openLogWindow: () => openServiceLogWindow(),
@@ -154,6 +157,54 @@ async function openMcpManagerWindow(): Promise<void> {
 	} else {
 		await window
 			.loadFile(join(__dirname, "../../../renderer-dist/index.html"), { query: { window: "mcp" } })
+			.catch((error: unknown) => {
+				void window.loadURL(fallbackDataUrl(error));
+			});
+	}
+	window.show();
+}
+
+async function openToolsetManagerWindow(): Promise<void> {
+	if (toolsetManagerWindow && !toolsetManagerWindow.isDestroyed()) {
+		toolsetManagerWindow.focus();
+		return;
+	}
+	const window = new BrowserWindow({
+		width: 940,
+		height: 760,
+		minWidth: 760,
+		minHeight: 560,
+		title: "工具集",
+		frame: false,
+		transparent: false,
+		backgroundColor: "#1c1c20",
+		roundedCorners: true,
+		hasShadow: true,
+		titleBarStyle: "hidden",
+		resizable: true,
+		show: false,
+		webPreferences: {
+			contextIsolation: true,
+			nodeIntegration: false,
+			preload: preloadPath,
+		},
+	});
+	toolsetManagerWindow = window;
+	windows.add(window);
+	window.on("closed", () => {
+		windows.delete(window);
+		if (toolsetManagerWindow === window) toolsetManagerWindow = undefined;
+	});
+
+	if (process.env.DESKTOP_ASSISTANT_DEV_SERVER_URL) {
+		const url = new URL(process.env.DESKTOP_ASSISTANT_DEV_SERVER_URL);
+		url.searchParams.set("window", "toolset");
+		await window.loadURL(url.toString()).catch((error: unknown) => {
+			void window.loadURL(fallbackDataUrl(error));
+		});
+	} else {
+		await window
+			.loadFile(join(__dirname, "../../../renderer-dist/index.html"), { query: { window: "toolset" } })
 			.catch((error: unknown) => {
 				void window.loadURL(fallbackDataUrl(error));
 			});
@@ -496,6 +547,8 @@ button{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer
 var entries = [];
 var filter = '';
 var autoScroll = true;
+var expandedRows = new Set();
+var BOTTOM_FOLLOW_PX = 24;
 var PET_LOG_STORAGE_KEY = 'pi-service-log-show-pet';
 var showPetLogs = readShowPetLogs();
 var catLabel = { user:'USER', ai:'AI', tool_call:'TOOL>', tool_result:'TOOL<', think:'THINK', diagnostic:'DIAG', system:'SYS', error:'ERROR', abort:'ABORT', retry:'RETRY', pet:'PET' };
@@ -504,6 +557,26 @@ function readShowPetLogs() {
 }
 function persistShowPetLogs() {
   try { localStorage.setItem(PET_LOG_STORAGE_KEY, showPetLogs ? 'true' : 'false'); } catch (_) {}
+}
+function getLogWrap() {
+  return document.getElementById('logWrap');
+}
+function isNearBottom(wrap) {
+  if (!wrap) return true;
+  return wrap.scrollHeight - wrap.scrollTop - wrap.clientHeight <= BOTTOM_FOLLOW_PX;
+}
+function scrollToBottom() {
+  var wrap = getLogWrap();
+  if (wrap) wrap.scrollTop = wrap.scrollHeight;
+}
+function updateAutoScrollButton() {
+  if (!autoScrollBtn) return;
+  autoScrollBtn.style.color = autoScroll ? '#6aa9ff' : '';
+  autoScrollBtn.title = autoScroll ? 'Auto scroll enabled' : 'Auto scroll disabled';
+}
+function setAutoScroll(enabled) {
+  autoScroll = enabled;
+  updateAutoScrollButton();
 }
 function escHtml(s) { return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;'); }
 function fmtTime(ts) {
@@ -585,14 +658,14 @@ function renderRow(e) {
     var icon = document.createElement('span');
     icon.className = 'expand-icon';
     icon.id = eid + '_ic';
-    icon.textContent = '>';
+    icon.textContent = expandedRows.has(eid) ? 'v' : '>';
     main.appendChild(icon);
   }
   row.appendChild(main);
 
   if (hasDetail) {
     var detail = document.createElement('div');
-    detail.className = 'row-detail';
+    detail.className = 'row-detail' + (expandedRows.has(eid) ? ' open' : '');
     detail.id = eid;
     var pre = document.createElement('pre');
     pre.textContent = e.detail;
@@ -602,17 +675,21 @@ function renderRow(e) {
   }
 
   wrap.appendChild(row);
-  if (autoScroll) wrap.scrollTop = wrap.scrollHeight;
 }
 function tog(id) {
   var el = document.getElementById(id);
   var ic = document.getElementById(id + '_ic');
   if (!el) return;
   var open = el.classList.toggle('open');
+  if (open) expandedRows.add(id);
+  else expandedRows.delete(id);
   if (ic) ic.textContent = open ? 'v' : '>';
 }
-function rerender() {
-  var wrap = document.getElementById('logWrap');
+function rerender(forceBottom) {
+  var wrap = getLogWrap();
+  var previousTop = wrap ? wrap.scrollTop : 0;
+  var shouldFollow = Boolean(forceBottom) || (autoScroll && isNearBottom(wrap));
+  if (wrap && autoScroll && !shouldFollow) setAutoScroll(false);
   wrap.innerHTML = '';
   var list = visibleEntries();
   document.getElementById('cnt').textContent = String(list.length);
@@ -621,14 +698,12 @@ function rerender() {
     return;
   }
   list.forEach(renderRow);
+  if (shouldFollow) scrollToBottom();
+  else if (wrap) wrap.scrollTop = previousTop;
 }
 function appendEntry(e) {
   entries.push(e);
   rerender();
-  if (autoScroll) {
-    var wrap = document.getElementById('logWrap');
-    wrap.scrollTop = wrap.scrollHeight;
-  }
 }
 function setFilter(btn, f) {
   if (f === 'pet' && !showPetLogs) return;
@@ -639,6 +714,7 @@ function setFilter(btn, f) {
 }
 function clearLog() {
   entries = [];
+  expandedRows.clear();
   rerender();
 }
 function applyPetLogVisibility() {
@@ -702,23 +778,22 @@ function refreshPetDebug() {
 }
 var autoScrollBtn = document.getElementById('autoScrollBtn');
 autoScrollBtn.addEventListener('click', function() {
-  autoScroll = !autoScroll;
-  autoScrollBtn.style.color = autoScroll ? '#6aa9ff' : '';
-  autoScrollBtn.title = autoScroll ? 'Auto scroll enabled' : 'Auto scroll disabled';
-  if (autoScroll) {
-    var wrap = document.getElementById('logWrap');
-    wrap.scrollTop = wrap.scrollHeight;
-  }
+  setAutoScroll(!autoScroll);
+  if (autoScroll) scrollToBottom();
 });
-autoScrollBtn.style.color = '#6aa9ff';
+updateAutoScrollButton();
+var logWrap = getLogWrap();
+if (logWrap) {
+  logWrap.addEventListener('scroll', function() {
+    setAutoScroll(isNearBottom(logWrap));
+  }, { passive: true });
+}
 applyPetLogVisibility();
 if (window.desktopAssistant) {
   if (window.desktopAssistant.getLogEntries) {
     window.desktopAssistant.getLogEntries().then(function(existing) {
       entries = existing.slice();
-      rerender();
-      var wrap = document.getElementById('logWrap');
-      if (wrap) wrap.scrollTop = wrap.scrollHeight;
+      rerender(true);
     }).catch(function(error) {
       appendEntry({ id: 'log-load-error', ts: Date.now(), cat: 'error', title: 'Failed to load log entries', detail: String(error) });
     });

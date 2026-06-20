@@ -216,6 +216,7 @@ function createSnapshot(options: { wakeWordEnabled?: boolean } = {}): DesktopAss
 		apiKeyStatus: DEFAULT_API_KEY_STATUS,
 		isRunning: false,
 		streamingText: "",
+		streamingThinking: "",
 		messages: [],
 		timeline: [],
 		pendingConfirmations: [],

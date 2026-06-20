@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { BrowserWindow, dialog, type IpcMain, shell } from "electron";
+import { BrowserWindow, dialog, type IpcMain, Notification, shell } from "electron";
 import type { DesktopAgentService } from "../agent/desktop-agent-service.ts";
 import {
 	type AbortRequest,
@@ -24,6 +24,14 @@ import {
 	type McpServerActionRequest,
 	type McpServerDeleteRequest,
 	type McpServerUpsertRequest,
+	type MemoCompleteRequest,
+	type MemoCreateRequest,
+	type MemoDeleteRequest,
+	type MemoItem,
+	type MemoListRequest,
+	type MemoSetReminderRequest,
+	type MemoSnoozeRequest,
+	type MemoUpdateRequest,
 	type PersonalSkillArchiveRequest,
 	type PersonalSkillReadRequest,
 	type PersonalSkillSaveRequest,
@@ -201,6 +209,7 @@ export function registerDesktopAssistantIpc(params: {
 	kwsService: KwsService;
 	openAppLaunchCacheWindow: () => Promise<void>;
 	openMcpManagerWindow: () => Promise<void>;
+	openToolsetManagerWindow: () => Promise<void>;
 	openPluginManagerWindow: () => Promise<void>;
 	openPersonalSkillManagerWindow: () => Promise<void>;
 	openLogWindow: () => Promise<void>;
@@ -217,6 +226,7 @@ export function registerDesktopAssistantIpc(params: {
 		kwsService,
 		openAppLaunchCacheWindow,
 		openMcpManagerWindow,
+		openToolsetManagerWindow,
 		openPluginManagerWindow,
 		openPersonalSkillManagerWindow,
 		openLogWindow,
@@ -248,6 +258,25 @@ export function registerDesktopAssistantIpc(params: {
 			if (window.isDestroyed()) continue;
 			window.webContents.send(DESKTOP_ASSISTANT_CHANNELS.petDebugEvent, event);
 		}
+	}
+
+	// OS-level reminder toast. Clicking it focuses the main window and opens the memo page.
+	function showMemoReminderNotification(memo: MemoItem): void {
+		if (!Notification.isSupported()) return;
+		const prefix = memo.reminderMissed ? "错过的提醒 · " : "提醒 · ";
+		const notification = new Notification({
+			title: `${prefix}${memo.title}`,
+			body: memo.notes?.slice(0, 200) || "点击查看备忘录",
+			silent: false,
+		});
+		notification.on("click", () => {
+			if (mainWindow.isDestroyed()) return;
+			if (mainWindow.isMinimized()) mainWindow.restore();
+			mainWindow.show();
+			mainWindow.focus();
+			sendToRenderer({ type: "route", route: "memo" });
+		});
+		notification.show();
 	}
 
 	function scheduleSnapshotSend(event: DesktopAssistantEvent): void {
@@ -290,6 +319,9 @@ export function registerDesktopAssistantIpc(params: {
 			} else {
 				// timeline, streaming_text, voice, session_notification etc. — send immediately.
 				sendToRenderer(event);
+				if (event.type === "memo_reminder" && event.memo) {
+					showMemoReminderNotification(event.memo);
+				}
 			}
 		}
 		const entry = desktopEventToLogEntry(event);
@@ -406,6 +438,27 @@ export function registerDesktopAssistantIpc(params: {
 		const { id, ...update } = request;
 		return service.updateGlobalMemory(id, update);
 	});
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoList, (_event, request: MemoListRequest = {}) =>
+		service.listMemos(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoCreate, (_event, request: MemoCreateRequest) =>
+		service.createMemo(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoUpdate, (_event, request: MemoUpdateRequest) =>
+		service.updateMemo(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoComplete, (_event, request: MemoCompleteRequest) =>
+		service.completeMemo(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoSnooze, (_event, request: MemoSnoozeRequest) =>
+		service.snoozeMemo(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoSetReminder, (_event, request: MemoSetReminderRequest) =>
+		service.setMemoReminder(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoDelete, (_event, request: MemoDeleteRequest) =>
+		service.deleteMemo(request),
+	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.getAppLaunchCache, () => service.getAppLaunchCache());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.clearAppLaunchCache, () => service.clearAppLaunchCache());
 	ipcMain.handle(
@@ -423,6 +476,7 @@ export function registerDesktopAssistantIpc(params: {
 	});
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openAppLaunchCacheWindow, () => openAppLaunchCacheWindow());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openMcpManagerWindow, () => openMcpManagerWindow());
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openToolsetManagerWindow, () => openToolsetManagerWindow());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openPluginManagerWindow, () => openPluginManagerWindow());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openPersonalSkillManagerWindow, () => openPersonalSkillManagerWindow());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.listSoftwarePlugins, () => service.listSoftwarePlugins());
@@ -562,5 +616,9 @@ export function registerDesktopAssistantIpc(params: {
 	ipcMain.on(DESKTOP_ASSISTANT_CHANNELS.windowSetMode, (event, payload: { mode: WindowMode; animate?: boolean }) => {
 		const window = BrowserWindow.fromWebContents(event.sender);
 		if (window && !window.isDestroyed()) applyWindowMode(window, payload.mode, { animate: payload.animate });
+	});
+	ipcMain.on(DESKTOP_ASSISTANT_CHANNELS.windowSetAlwaysOnTop, (event, payload: { enabled: boolean }) => {
+		const window = BrowserWindow.fromWebContents(event.sender);
+		if (window && !window.isDestroyed()) window.setAlwaysOnTop(payload.enabled, "floating");
 	});
 }
