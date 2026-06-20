@@ -460,6 +460,52 @@ function App() {
 		if (sandboxPhase === "initializing") setSandboxModalDismissed(false);
 	}, [sandboxPhase]);
 
+	// Reset the home inline conversation back to a clean landing page by starting a
+	// fresh (empty) conversation. The prior conversation stays in history.
+	const clearHomeConversation = async () => {
+		if (!window.desktopAssistant) return;
+		const created = await window.desktopAssistant.newConversation();
+		setLiveSnapshot(created);
+		setResumedConversationSessionId(undefined);
+		setLoadingConversationSessionId(undefined);
+		await refreshHistory();
+	};
+
+	// On the home page, an idle voice conversation clears itself after 5s so the
+	// landing page returns to a clean state. Any in-app activity (mouse move while
+	// focused, click, key, wheel) or a new voice turn resets the countdown; while the
+	// window is unfocused those events don't fire, so the timer simply runs out.
+	// NOTE: must stay above the `!liveSnapshot` early return so hook order is stable.
+	useEffect(() => {
+		if (route !== "home" || !liveSnapshot || liveSnapshot.messages.length === 0 || liveSnapshot.isRunning) {
+			return undefined;
+		}
+		const tone = voiceToneOf(liveSnapshot.voiceOverlay.state);
+		if (tone === "capturing" || tone === "processing" || tone === "speaking") return undefined;
+		let timer: number | undefined;
+		const arm = () => {
+			if (timer !== undefined) window.clearTimeout(timer);
+			timer = window.setTimeout(() => void clearHomeConversation(), HOME_IDLE_CLEAR_MS);
+		};
+		const onMove = () => {
+			if (document.hasFocus()) arm();
+		};
+		const onActivity = () => arm();
+		arm();
+		window.addEventListener("mousemove", onMove);
+		window.addEventListener("mousedown", onActivity);
+		window.addEventListener("keydown", onActivity);
+		window.addEventListener("wheel", onActivity, { passive: true });
+		return () => {
+			if (timer !== undefined) window.clearTimeout(timer);
+			window.removeEventListener("mousemove", onMove);
+			window.removeEventListener("mousedown", onActivity);
+			window.removeEventListener("keydown", onActivity);
+			window.removeEventListener("wheel", onActivity);
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [route, liveSnapshot?.messages.length, liveSnapshot?.isRunning, liveSnapshot?.voiceOverlay.state]);
+
 	if (!liveSnapshot) {
 		return <StartupSplash phase={startupPhase} />;
 	}
@@ -696,51 +742,6 @@ function App() {
 		await window.desktopAssistant.completeMemo({ id, completed: true });
 		// memo_changed event refreshes memoSummary on the snapshot.
 	};
-
-	// Reset the home inline conversation back to a clean landing page by starting a
-	// fresh (empty) conversation. The prior conversation stays in history.
-	const clearHomeConversation = async () => {
-		if (!window.desktopAssistant) return;
-		const created = await window.desktopAssistant.newConversation();
-		setLiveSnapshot(created);
-		setResumedConversationSessionId(undefined);
-		setLoadingConversationSessionId(undefined);
-		await refreshHistory();
-	};
-
-	// On the home page, an idle voice conversation clears itself after 5s so the
-	// landing page returns to a clean state. Any in-app activity (mouse move while
-	// focused, click, key, wheel) or a new voice turn resets the countdown; while the
-	// window is unfocused those events don't fire, so the timer simply runs out.
-	useEffect(() => {
-		if (route !== "home" || !liveSnapshot || liveSnapshot.messages.length === 0 || liveSnapshot.isRunning) {
-			return undefined;
-		}
-		const tone = voiceToneOf(liveSnapshot.voiceOverlay.state);
-		if (tone === "capturing" || tone === "processing" || tone === "speaking") return undefined;
-		let timer: number | undefined;
-		const arm = () => {
-			if (timer !== undefined) window.clearTimeout(timer);
-			timer = window.setTimeout(() => void clearHomeConversation(), HOME_IDLE_CLEAR_MS);
-		};
-		const onMove = () => {
-			if (document.hasFocus()) arm();
-		};
-		const onActivity = () => arm();
-		arm();
-		window.addEventListener("mousemove", onMove);
-		window.addEventListener("mousedown", onActivity);
-		window.addEventListener("keydown", onActivity);
-		window.addEventListener("wheel", onActivity, { passive: true });
-		return () => {
-			if (timer !== undefined) window.clearTimeout(timer);
-			window.removeEventListener("mousemove", onMove);
-			window.removeEventListener("mousedown", onActivity);
-			window.removeEventListener("keydown", onActivity);
-			window.removeEventListener("wheel", onActivity);
-		};
-		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [route, liveSnapshot?.messages.length, liveSnapshot?.isRunning, liveSnapshot?.voiceOverlay.state]);
 
 	const deleteConversation = async (sessionId: string) => {
 		if (!window.desktopAssistant) return;
