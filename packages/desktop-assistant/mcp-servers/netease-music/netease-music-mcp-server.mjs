@@ -25,6 +25,7 @@
  */
 
 import { spawn } from "node:child_process";
+import { dirname } from "node:path";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import { z } from "zod";
@@ -210,7 +211,11 @@ async function ensureConnected() {
       launchAttempted = true;
       launchStartedAt = Date.now();
       try {
-        const child = spawn(EXE_PATH, [`--remote-debugging-port=${PORT}`], { detached: true, stdio: "ignore" });
+        const child = spawn(EXE_PATH, [`--remote-debugging-port=${PORT}`], {
+          cwd: dirname(EXE_PATH),
+          detached: true,
+          stdio: "ignore",
+        });
         child.on("error", () => {}); // bad path / launch failure must not crash the server
         child.unref();
       } catch {}

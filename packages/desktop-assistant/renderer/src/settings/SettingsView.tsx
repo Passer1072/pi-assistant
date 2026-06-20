@@ -1,17 +1,18 @@
 import type React from "react";
-import { ArrowLeft, BookOpen, Check, ChevronRight, Eye, EyeOff, FilePenLine, KeyRound, Loader2, Minus, Plus, Plug, RefreshCw, ShieldCheck, Trash2, X } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Minus, Pin, PinOff, Plus, Plug, RefreshCw, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_DEEPSEEK_RELAY_URL } from "../../../src/shared/deepseek-connection.ts";
-import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, type DesktopAssistantSettings, type DesktopAssistantSnapshot, type DesktopCapabilityId, type SkillFileView, type WakeWordModelMetadata, type WebSearchProvider } from "../../../src/shared/types.ts";
+import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, type DesktopAssistantSettings, type DesktopAssistantSnapshot, type WakeWordModelMetadata, type WebSearchProvider } from "../../../src/shared/types.ts";
 import { resolveWakeWordModelWakeWord } from "../../../src/shared/wake-word-settings.ts";
 import { cloneSettings, normalizeDraftSettingsBeforeApply, settingsKey } from "../settings-draft.ts";
 import { apiKeyStatusText, formatBytes, formatImportedAt } from "../formatters.ts";
-import { capabilityLabels, PROVIDERS, updateVoiceSettings, VOICE_PROVIDER_LABEL, VOICE_STT_MODEL_HINT } from "../settings-view-model.ts";
+import { PROVIDERS, updateVoiceSettings, VOICE_PROVIDER_LABEL, VOICE_STT_MODEL_HINT } from "../settings-view-model.ts";
 
 export function SettingsView({
 	snapshot,
 	onBack,
 	onOpenMcp,
+	onOpenToolset,
 	onOpenPlugins,
 	onOpenPersonalSkills,
 	onUpdate,
@@ -21,10 +22,13 @@ export function SettingsView({
 	wakeModels,
 	onWakeModels,
 	onClearHistory,
+	windowAlwaysOnTop,
+	onWindowAlwaysOnTopChange,
 }: {
 	snapshot: DesktopAssistantSnapshot;
 	onBack: () => void;
 	onOpenMcp: () => void;
+	onOpenToolset: () => void;
 	onOpenPlugins: () => void;
 	onOpenPersonalSkills: () => void;
 	onUpdate: (s: Partial<DesktopAssistantSettings>) => Promise<DesktopAssistantSnapshot | undefined>;
@@ -34,6 +38,8 @@ export function SettingsView({
 	wakeModels: WakeWordModelMetadata[];
 	onWakeModels: (models: WakeWordModelMetadata[]) => void;
 	onClearHistory: () => void;
+	windowAlwaysOnTop: boolean;
+	onWindowAlwaysOnTopChange: (enabled: boolean) => void;
 }) {
 	const [draftSettings, setDraftSettings] = useState<DesktopAssistantSettings>(() => cloneSettings(snapshot.settings));
 	const [baselineSettingsKey, setBaselineSettingsKey] = useState(() => settingsKey(snapshot.settings));
@@ -45,10 +51,6 @@ export function SettingsView({
 	const [showVoiceKey, setShowVoiceKey] = useState(false);
 	const [saving, setSaving] = useState(false);
 	const [savingVoiceKey, setSavingVoiceKey] = useState(false);
-	const [skillFile, setSkillFile] = useState<SkillFileView | undefined>();
-	const [skillDraft, setSkillDraft] = useState("");
-	const [skillBusy, setSkillBusy] = useState(false);
-	const [skillStatus, setSkillStatus] = useState("");
 	const [appCacheAliasCount, setAppCacheAliasCount] = useState<number | undefined>();
 	const [appCacheBusy, setAppCacheBusy] = useState(false);
 	const [appCacheStatus, setAppCacheStatus] = useState("");
@@ -189,6 +191,8 @@ export function SettingsView({
 	})();
 	const statusText = apiKeyStatusText(snapshot.apiKeyStatus);
 	const activeWakeModel = wakeModels.find((model) => model.id === draftSettings.voice.activeOwwModelId);
+	const capabilityIds = ["system", "document", "ppt", "excel"] as const;
+	const enabledCapabilityCount = capabilityIds.filter((id) => draftSettings.capabilities[id]?.enabled).length;
 
 	useEffect(() => {
 		if (!window.desktopAssistant) return;
@@ -221,52 +225,6 @@ export function SettingsView({
 			cancelled = true;
 		};
 	}, [onWakeModels]);
-
-	const updateCapability = (id: DesktopCapabilityId, update: Partial<DesktopAssistantSettings["capabilities"]["system"]>) => {
-		updateDraft({
-			capabilities: {
-				...draftSettings.capabilities,
-				[id]: {
-					...draftSettings.capabilities[id],
-					...update,
-				},
-			},
-		});
-	};
-
-	const openSkillFile = async (id: DesktopCapabilityId) => {
-		if (!window.desktopAssistant) return;
-		setSkillBusy(true);
-		setSkillStatus("");
-		try {
-			const next = await window.desktopAssistant.getSkillFile({ capabilityId: id });
-			setSkillFile(next);
-			setSkillDraft(next.content);
-		} catch (error) {
-			setSkillStatus(error instanceof Error ? error.message : String(error));
-		} finally {
-			setSkillBusy(false);
-		}
-	};
-
-	const saveSkillFile = async () => {
-		if (!window.desktopAssistant || !skillFile) return;
-		setSkillBusy(true);
-		setSkillStatus("");
-		try {
-			const next = await window.desktopAssistant.updateSkillFile({
-				capabilityId: skillFile.capabilityId,
-				content: skillDraft,
-			});
-			setSkillFile(next);
-			setSkillDraft(next.content);
-			setSkillStatus("Skill 已保存，下一次请求会使用新内容。");
-		} catch (error) {
-			setSkillStatus(error instanceof Error ? error.message : String(error));
-		} finally {
-			setSkillBusy(false);
-		}
-	};
 
 	const openAppCache = async () => {
 		if (!window.desktopAssistant) return;
@@ -424,6 +382,23 @@ export function SettingsView({
 			</div>
 
 			<div className="settings-scroll">
+				<section className="set-section">
+					<h3>窗口</h3>
+					<label className="set-row toggle-row">
+						<span className="setting-label-with-icon">
+							{windowAlwaysOnTop ? <Pin size={14} /> : <PinOff size={14} />}
+							<span>窗口置顶</span>
+						</span>
+						<button
+							type="button"
+							className={`toggle ${windowAlwaysOnTop ? "on" : ""}`}
+							onClick={() => onWindowAlwaysOnTopChange(!windowAlwaysOnTop)}
+							aria-pressed={windowAlwaysOnTop}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+				</section>
 				<section className="set-section">
 					<h3>插件</h3>
 					<div className="mcp-entry-row">
@@ -702,84 +677,21 @@ export function SettingsView({
 				</section>
 
 				<section className="set-section">
-					<h3>能力</h3>
-					<div className="capability-list">
-						{(["system", "document", "ppt", "excel"] as DesktopCapabilityId[]).map((id) => {
-							const capability = draftSettings.capabilities[id];
-							const label = capabilityLabels[id];
-							return (
-								<div className={`capability-card ${capability.enabled ? "enabled" : ""}`} key={id}>
-									<div className="capability-main">
-										<div className="capability-icon">
-											<ShieldCheck size={15} />
-										</div>
-										<div>
-											<strong>{label.title}</strong>
-											<p>{label.description}</p>
-										</div>
-									</div>
-									<div className="capability-actions">
-										<button type="button" className="skill-edit-btn" onClick={() => openSkillFile(id)}>
-											<FilePenLine size={12} />
-											编辑 skill
-										</button>
-										<label className="mini-toggle-row">
-											<span>启用</span>
-											<button
-												type="button"
-												className={`toggle ${capability.enabled ? "on" : ""}`}
-												onClick={() => updateCapability(id, { enabled: !capability.enabled })}
-												aria-pressed={capability.enabled}
-											>
-												<span className="toggle-thumb" />
-											</button>
-										</label>
-										<label className="mini-toggle-row">
-											<span>命令优先</span>
-											<button
-												type="button"
-												className={`toggle ${capability.commandFirst ? "on" : ""}`}
-												onClick={() => {
-													if (id !== "system") updateCapability(id, { commandFirst: !capability.commandFirst });
-												}}
-												aria-pressed={capability.commandFirst}
-												disabled={id === "system"}
-												title={id === "system" ? "系统操作固定优先使用后台命令/API" : undefined}
-											>
-												<span className="toggle-thumb" />
-											</button>
-										</label>
-									</div>
-								</div>
-							);
-						})}
-					</div>
-					{skillFile ? (
-						<div className="skill-editor">
-							<div className="skill-editor-head">
-								<div>
-									<strong>{capabilityLabels[skillFile.capabilityId].title} skill</strong>
-									<small>{skillFile.path}</small>
-								</div>
-								<div className="skill-editor-actions">
-									<button type="button" className="ghost-btn wide" onClick={() => openSkillFile(skillFile.capabilityId)} disabled={skillBusy}>
-										刷新
-									</button>
-									<button type="button" className="primary-btn" onClick={saveSkillFile} disabled={skillBusy || skillDraft === skillFile.content}>
-										{skillBusy ? <Loader2 size={14} className="spin" /> : <Check size={14} />}
-										<span>保存</span>
-									</button>
-								</div>
-							</div>
-							<textarea
-								className="skill-editor-textarea"
-								value={skillDraft}
-								onChange={(event) => setSkillDraft(event.target.value)}
-								spellCheck={false}
-							/>
-							{skillStatus ? <div className="skill-editor-status">{skillStatus}</div> : null}
+					<h3>工具集</h3>
+					<div className="mcp-entry-row">
+						<div>
+							<strong>
+								{enabledCapabilityCount}/{capabilityIds.length} 组能力已启用
+							</strong>
+							<p className="set-hint">
+								按能力分组管理 AI 可调用的内置工具（系统操作、文档、Excel、PPT）。可逐项开关、查看每个工具的用途，并编辑对应的 skill。
+							</p>
 						</div>
-					) : null}
+						<button type="button" className="primary-btn" onClick={onOpenToolset}>
+							<Wrench size={14} />
+							<span>工具集</span>
+						</button>
+					</div>
 				</section>
 
 				<section className="set-section">

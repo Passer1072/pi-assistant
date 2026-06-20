@@ -32,6 +32,15 @@ import type {
 	McpServerListResponse,
 	McpServerStatus,
 	McpServerUpsertRequest,
+	MemoCompleteRequest,
+	MemoCreateRequest,
+	MemoDeleteRequest,
+	MemoItem,
+	MemoListRequest,
+	MemoListResponse,
+	MemoSetReminderRequest,
+	MemoSnoozeRequest,
+	MemoUpdateRequest,
 	PersonalSkillArchiveRequest,
 	PersonalSkillFileView,
 	PersonalSkillListResponse,
@@ -124,6 +133,13 @@ interface DesktopAssistantApi {
 	deleteGlobalMemory(request: GlobalMemoryDeleteRequest): Promise<GlobalMemoryListResponse>;
 	clearGlobalMemories(): Promise<GlobalMemoryClearResponse>;
 	updateGlobalMemory(request: GlobalMemoryUpdateRequest): Promise<GlobalMemoryEntry | undefined>;
+	listMemos(request?: MemoListRequest): Promise<MemoListResponse>;
+	createMemo(request: MemoCreateRequest): Promise<MemoItem>;
+	updateMemo(request: MemoUpdateRequest): Promise<MemoItem>;
+	completeMemo(request: MemoCompleteRequest): Promise<MemoItem>;
+	snoozeMemo(request: MemoSnoozeRequest): Promise<MemoItem>;
+	setMemoReminder(request: MemoSetReminderRequest): Promise<MemoItem>;
+	deleteMemo(request: MemoDeleteRequest): Promise<boolean>;
 	getAppLaunchCache(): Promise<AppLaunchCacheView>;
 	clearAppLaunchCache(): Promise<AppLaunchCacheView>;
 	deleteAppLaunchCacheEntry(request: DeleteAppLaunchCacheEntryRequest): Promise<AppLaunchCacheView>;
@@ -135,6 +151,7 @@ interface DesktopAssistantApi {
 	openSandboxFolder(): Promise<void>;
 	openSandboxSettingsWindow(): Promise<void>;
 	openMcpManagerWindow(): Promise<void>;
+	openToolsetManagerWindow(): Promise<void>;
 	openPluginManagerWindow(): Promise<void>;
 	openPersonalSkillManagerWindow(): Promise<void>;
 	openLogWindow(): Promise<void>;
@@ -161,6 +178,7 @@ interface DesktopAssistantApi {
 	minimizeWindow(): void;
 	closeWindow(): void;
 	setWindowMode(mode: WindowMode, animate?: boolean): void;
+	setWindowAlwaysOnTop(enabled: boolean): void;
 }
 
 declare global {

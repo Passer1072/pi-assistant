@@ -778,6 +778,7 @@ export interface TimelineItem {
 		| "agent"
 		| "assistant"
 		| "thinking_summary"
+		| "thinking"
 		| "tool"
 		| "confirmation"
 		| "voice"
@@ -796,6 +797,7 @@ export interface ChatMessageView {
 	id: string;
 	role: "user" | "assistant" | "system";
 	text: string;
+	thinking?: string;
 	timestamp: number;
 	order: number;
 	tokenUsage?: MessageTokenUsageView;
@@ -879,6 +881,7 @@ export interface DesktopAssistantSnapshot {
 	apiKeyStatus: ApiKeyValidationStatus;
 	isRunning: boolean;
 	streamingText: string;
+	streamingThinking: string;
 	messages: ChatMessageView[];
 	timeline: TimelineItem[];
 	pendingConfirmations: PendingConfirmation[];
@@ -890,6 +893,8 @@ export interface DesktopAssistantSnapshot {
 	contextUsage?: ConversationContextUsageView;
 	/** Live sandbox lifecycle state; drives the home-page init popup. */
 	sandboxStatus?: SandboxStatus;
+	/** Roll-up of memos/to-dos; drives the sidebar badge and reminder strips. */
+	memoSummary?: MemoSummary;
 }
 
 export type SessionNotificationKind = "awaiting" | "completed";
@@ -903,6 +908,124 @@ export interface SessionNotification {
 	sessionId: string;
 	title: string;
 	kind: SessionNotificationKind;
+}
+
+// ── 备忘录 / 待办 ──────────────────────────────────────────────────────────
+export type MemoStatus = "active" | "completed" | "archived";
+export type MemoPriority = "none" | "low" | "medium" | "high";
+export type MemoRecurrence = "none" | "daily" | "weekly" | "monthly";
+/** Lifecycle of a memo's reminder. "fired" includes "missed" (fired late on startup). */
+export type MemoReminderState = "none" | "pending" | "fired" | "snoozed" | "dismissed";
+
+export interface MemoSubtask {
+	id: string;
+	title: string;
+	done: boolean;
+}
+
+export interface MemoItem {
+	id: string;
+	title: string;
+	/** Free-form body / notes. */
+	notes: string;
+	status: MemoStatus;
+	priority: MemoPriority;
+	/** Due time (ISO 8601). Optional. */
+	dueAt?: string;
+	/** Reminder time (ISO 8601); may differ from dueAt (e.g. remind a day early). */
+	reminderAt?: string;
+	recurrence: MemoRecurrence;
+	tags: string[];
+	subtasks: MemoSubtask[];
+	pinned: boolean;
+	/** Optional accent color token (hex or css var). */
+	color?: string;
+	reminderState: MemoReminderState;
+	/** True when the reminder fired after its scheduled time (app was closed). */
+	reminderMissed?: boolean;
+	createdAt: string;
+	updatedAt: string;
+	completedAt?: string;
+	createdBy: "user" | "ai";
+	/** Conversation that created this memo (AI-created); used to jump back. */
+	sourceSessionId?: string;
+}
+
+/** Lightweight roll-up carried on snapshots; drives sidebar badge + reminder strips. */
+export interface MemoSummary {
+	total: number;
+	activeCount: number;
+	dueTodayCount: number;
+	overdueCount: number;
+	/** Overdue + due-today + nearest upcoming active memos, capped for display. */
+	upcoming: MemoItem[];
+}
+
+export type MemoSortKey = "due" | "priority" | "created" | "manual";
+
+export interface MemoListRequest {
+	status?: MemoStatus;
+	tag?: string;
+	query?: string;
+	sort?: MemoSortKey;
+}
+
+export interface MemoListResponse {
+	memos: MemoItem[];
+	summary: MemoSummary;
+}
+
+export interface MemoCreateRequest {
+	title: string;
+	notes?: string;
+	priority?: MemoPriority;
+	dueAt?: string;
+	reminderAt?: string;
+	recurrence?: MemoRecurrence;
+	tags?: string[];
+	subtasks?: Array<{ title: string; done?: boolean }>;
+	pinned?: boolean;
+	color?: string;
+	createdBy?: "user" | "ai";
+	sourceSessionId?: string;
+}
+
+export interface MemoUpdateRequest {
+	id: string;
+	title?: string;
+	notes?: string;
+	status?: MemoStatus;
+	priority?: MemoPriority;
+	/** Pass null to clear; omit to leave unchanged. */
+	dueAt?: string | null;
+	reminderAt?: string | null;
+	recurrence?: MemoRecurrence;
+	tags?: string[];
+	subtasks?: MemoSubtask[];
+	pinned?: boolean;
+	color?: string | null;
+}
+
+export interface MemoDeleteRequest {
+	id: string;
+}
+
+export interface MemoCompleteRequest {
+	id: string;
+	/** Defaults to true; pass false to re-open a completed memo. */
+	completed?: boolean;
+}
+
+export interface MemoSnoozeRequest {
+	id: string;
+	/** New reminder time (ISO 8601). */
+	until: string;
+}
+
+export interface MemoSetReminderRequest {
+	id: string;
+	/** New reminder time (ISO 8601), or null to clear it. */
+	reminderAt: string | null;
 }
 
 export type DesktopAssistantDiagnosticLevel = "debug" | "info" | "warn" | "error";
@@ -926,9 +1049,12 @@ export interface DesktopAssistantEvent {
 		| "error"
 		| "skill_file"
 		| "streaming_text"
+		| "streaming_thinking"
 		| "mcp_status"
 		| "software_plugin_progress"
 		| "sandbox_status"
+		| "memo_changed"
+		| "memo_reminder"
 		| "route";
 	snapshot?: DesktopAssistantSnapshot;
 	/** Live roster for "session_status" events (and mirrored on snapshots). */
@@ -946,11 +1072,16 @@ export interface DesktopAssistantEvent {
 	skillFile?: SkillFileView;
 	error?: string;
 	streamingText?: string;
+	streamingThinking?: string;
 	mcp?: McpServerListResponse;
 	softwarePluginProgress?: SoftwarePluginOperationProgress;
 	/** Payload for "sandbox_status" events. */
 	sandboxStatus?: SandboxStatus;
-	route?: "settings" | "mcp";
+	/** Payload for "memo_reminder" events (the memo whose reminder just fired). */
+	memo?: MemoItem;
+	/** Roll-up carried on "memo_changed" / "memo_reminder" events. */
+	memoSummary?: MemoSummary;
+	route?: "settings" | "mcp" | "memo";
 }
 
 export type PromptAttachmentKind = "text" | "word" | "excel" | "powerpoint" | "pdf" | "image" | "unknown";
@@ -1671,6 +1802,13 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	deleteGlobalMemory: "desktop-assistant:delete-global-memory",
 	clearGlobalMemories: "desktop-assistant:clear-global-memories",
 	updateGlobalMemory: "desktop-assistant:update-global-memory",
+	memoList: "desktop-assistant:memo-list",
+	memoCreate: "desktop-assistant:memo-create",
+	memoUpdate: "desktop-assistant:memo-update",
+	memoComplete: "desktop-assistant:memo-complete",
+	memoSnooze: "desktop-assistant:memo-snooze",
+	memoSetReminder: "desktop-assistant:memo-set-reminder",
+	memoDelete: "desktop-assistant:memo-delete",
 	getAppLaunchCache: "desktop-assistant:get-app-launch-cache",
 	clearAppLaunchCache: "desktop-assistant:clear-app-launch-cache",
 	deleteAppLaunchCacheEntry: "desktop-assistant:delete-app-launch-cache-entry",
@@ -1682,6 +1820,7 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	openSandboxFolder: "desktop-assistant:open-sandbox-folder",
 	openSandboxSettingsWindow: "desktop-assistant:open-sandbox-settings-window",
 	openMcpManagerWindow: "desktop-assistant:open-mcp-manager-window",
+	openToolsetManagerWindow: "desktop-assistant:open-toolset-manager-window",
 	startVoice: "desktop-assistant:start-voice",
 	stopVoice: "desktop-assistant:stop-voice",
 	updateVoiceOverlay: "desktop-assistant:update-voice-overlay",
@@ -1703,4 +1842,5 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	getPetDebug: "desktop-assistant:get-pet-debug",
 	petDebugEvent: "desktop-assistant:pet-debug-event",
 	windowSetMode: "desktop-assistant:window-set-mode",
+	windowSetAlwaysOnTop: "desktop-assistant:window-set-always-on-top",
 } as const;

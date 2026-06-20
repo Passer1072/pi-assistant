@@ -61,6 +61,7 @@ export const HISTORY_INITIAL_MESSAGE_LIMIT = 30;
 export const HISTORY_INITIAL_TIMELINE_LIMIT = 20;
 export const HISTORY_PAGE_LIMIT = 30;
 const TOKEN_SAVING_FROZEN_FORMS_MAX = 64;
+const REDACTED_THINKING_PLACEHOLDER = "(thinking content was filtered for safety)";
 
 interface PendingTokenSavingCompactionReview {
 	baselinePromptTokens?: number;
@@ -79,6 +80,7 @@ export interface ContextSnapshotFragment {
 	sessionId: string;
 	isRunning: boolean;
 	streamingText: string;
+	streamingThinking: string;
 	messages: ChatMessageView[];
 	timeline: TimelineItem[];
 	pendingConfirmations: PendingConfirmation[];
@@ -157,8 +159,10 @@ export class ConversationContext {
 	private confirmationAborted = false;
 	isBusy = false;
 	streamingText = "";
+	streamingThinking = "";
 	private nextDisplayOrder = 1;
 	private streamingTextTimer: ReturnType<typeof setTimeout> | undefined;
+	private streamingThinkingTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingAssistantRunError:
 		| {
 				errorMessage?: string;
@@ -479,6 +483,8 @@ export class ConversationContext {
 		}
 		if (event.type === "tool_execution_start") {
 			this.streamingText = "";
+			// The reasoning that led to this tool call was already committed as its own
+			// thinking box at the preceding message_end, so nothing to carry over here.
 			this.emitSnapshot();
 		}
 		if (event.type === "tool_execution_end") {
@@ -494,11 +500,20 @@ export class ConversationContext {
 				this.streamingText += assistantEvent.delta;
 				this.scheduleStreamingTextEmit();
 			}
+			if (assistantEvent.type === "thinking_delta") {
+				this.streamingThinking += assistantEvent.delta;
+				this.scheduleStreamingThinkingEmit();
+			}
 		}
 		if (event.type === "message_end" && event.message.role === "assistant") {
 			this.reviewPendingTokenSavingCompaction(event.message);
 			this.logTokenUsageTelemetry(event.message);
 			this.flushStreamingText();
+			// Commit this step's reasoning as its own ordered thinking box — placed before
+			// the step's answer text and the tool calls that follow — then reset the live
+			// buffer so the next step (after a tool runs) starts a brand-new box instead of
+			// accumulating into one continuous block.
+			this.commitThinkingSegment(extractThinkingFromAssistantMessage(event.message));
 			const text = event.message.content
 				.filter((content) => content.type === "text")
 				.map((content) => content.text)
@@ -517,6 +532,10 @@ export class ConversationContext {
 			}
 		}
 		if (event.type === "agent_end") {
+			this.flushStreamingText();
+			// Safety net: commit any reasoning not already closed by a message_end (e.g. an
+			// errored/aborted turn) so it still shows as its own box.
+			this.commitThinkingSegment();
 			const text = extractLatestAssistantTextFromAgentMessages(event.messages);
 			const turnTokenUsage = tokenUsageFromAgentMessages(event.messages);
 			this.streamingText = "";
@@ -637,7 +656,10 @@ export class ConversationContext {
 	}
 
 	abort(): void {
+		this.flushStreamingText();
 		this.streamingText = "";
+		// Preserve the interrupted reasoning as its own box rather than dropping it.
+		this.commitThinkingSegment();
 		this.setBusy(false);
 		this.session?.abort();
 		this.archive.write("abort_requested", {
@@ -812,6 +834,7 @@ export class ConversationContext {
 			sessionId: this.session?.sessionId ?? "bootstrap",
 			isRunning: this.isBusy,
 			streamingText: this.streamingText,
+			streamingThinking: this.streamingThinking,
 			messages: this.messages,
 			timeline: this.timeline,
 			pendingConfirmations: this.pendingConfirmations,
@@ -848,6 +871,10 @@ export class ConversationContext {
 		if (this.streamingTextTimer) {
 			clearTimeout(this.streamingTextTimer);
 			this.streamingTextTimer = undefined;
+		}
+		if (this.streamingThinkingTimer) {
+			clearTimeout(this.streamingThinkingTimer);
+			this.streamingThinkingTimer = undefined;
 		}
 		try {
 			await this.runtime?.dispose();
@@ -949,6 +976,7 @@ export class ConversationContext {
 		};
 		this.completedApprovalResults = [];
 		this.streamingText = "";
+		this.streamingThinking = "";
 		this.confirmationAborted = false;
 		this.nextDisplayOrder = source.nextDisplayOrder;
 		this.conversationThinking = this.restoreConversationThinkingState(sessionId);
@@ -1133,7 +1161,7 @@ export class ConversationContext {
 	pushMessage(
 		role: ChatMessageView["role"],
 		text: string,
-		options: { tokenUsage?: MessageTokenUsageView; turnTokenUsage?: MessageTokenUsageView } = {},
+		options: { tokenUsage?: MessageTokenUsageView; turnTokenUsage?: MessageTokenUsageView; thinking?: string } = {},
 	): void {
 		const timestamp = Date.now();
 		this.lastActivityAt = timestamp;
@@ -1150,6 +1178,7 @@ export class ConversationContext {
 				id: randomUUID(),
 				role,
 				text,
+				thinking: options.thinking,
 				timestamp,
 				order: this.consumeDisplayOrder(),
 				tokenUsage: options.tokenUsage,
@@ -1284,6 +1313,47 @@ export class ConversationContext {
 		if (this.streamingText) {
 			this.emit({ type: "streaming_text", streamingText: this.streamingText });
 		}
+	}
+
+	private scheduleStreamingThinkingEmit(): void {
+		if (this.streamingThinkingTimer) return;
+		this.streamingThinkingTimer = setTimeout(() => {
+			this.streamingThinkingTimer = undefined;
+			if (this.streamingThinking) {
+				this.emit({ type: "streaming_thinking", streamingThinking: this.streamingThinking });
+			}
+		}, ConversationContext.STREAMING_THROTTLE_MS);
+	}
+
+	/**
+	 * Close the current reasoning segment: push it as its own ordered "thinking"
+	 * timeline item (so it interleaves correctly with the tool calls and answer that
+	 * follow) and reset the live buffer so the next segment opens a fresh box.
+	 *
+	 * @param text Authoritative thinking text (e.g. from the finished assistant
+	 *   message). Falls back to the live streaming buffer when omitted.
+	 */
+	private commitThinkingSegment(text?: string): void {
+		if (this.streamingThinkingTimer) {
+			clearTimeout(this.streamingThinkingTimer);
+			this.streamingThinkingTimer = undefined;
+		}
+		const hadLiveBuffer = this.streamingThinking.length > 0;
+		const thinking = (text ?? this.streamingThinking).trim();
+		this.streamingThinking = "";
+		if (!thinking) {
+			// Nothing to commit; only refresh if there was a live box that needs clearing.
+			if (hadLiveBuffer) this.emitSnapshot();
+			return;
+		}
+		this.pushTimeline({
+			id: `thinking-${randomUUID()}`,
+			kind: "thinking",
+			title: "已深度思考",
+			detail: thinking,
+			status: "succeeded",
+			timestamp: Date.now(),
+		});
 	}
 }
 
@@ -1471,6 +1541,18 @@ function extractLatestAssistantTextFromAgentMessages(
 	return undefined;
 }
 
+function extractThinkingFromAssistantMessage(
+	message: Extract<AgentSessionEvent, { type: "message_end" }>["message"],
+): string | undefined {
+	if (message.role !== "assistant") return undefined;
+	const thinking = message.content
+		.filter((content) => content.type === "thinking")
+		.map((content) => (content.redacted ? REDACTED_THINKING_PLACEHOLDER : content.thinking))
+		.join("")
+		.trim();
+	return thinking || undefined;
+}
+
 function extractLatestAssistantRunError(
 	messages: Extract<AgentSessionEvent, { type: "agent_end" }>["messages"],
 ): { errorMessage?: string; stopReason: "error" | "aborted" } | undefined {
@@ -1563,6 +1645,12 @@ export interface HistoryDisplayPage {
 	timeline: TimelineItem[];
 	hasMoreBefore: boolean;
 	oldestOrder?: number;
+}
+
+interface RestoredThinkingDelta {
+	sequence: number;
+	contentIndex?: number;
+	delta: string;
 }
 
 export function normalizeHistoryLimit(value: number | undefined, fallback: number): number {
@@ -1671,7 +1759,7 @@ function buildHistoryDisplaySourceFromArchive(
 	sessionId: string,
 	loadedFrom: ConversationHistoryLoadSource,
 ): HistoryDisplaySource {
-	const messages = dedupeArchiveMessages(archive.messages)
+	const messages: ChatMessageView[] = dedupeArchiveMessages(archive.messages)
 		.map((message, index) => ({
 			id: `${sessionId}-msg-${message.sequence}-${index}`,
 			role: message.role,
@@ -1685,8 +1773,13 @@ function buildHistoryDisplaySourceFromArchive(
 				Date.now(),
 			order: message.sequence,
 		}))
-		.sort((left, right) => left.order - right.order) satisfies ChatMessageView[];
-	const timeline: TimelineItem[] = [];
+		.sort((left, right) => left.order - right.order);
+	// Reasoning deltas become their own ordered thinking boxes, interleaved with tools.
+	const timeline: TimelineItem[] = buildThinkingTimelineItems(
+		archive.thinking,
+		sessionId,
+		Date.parse(archive.updatedAt) || Date.now(),
+	);
 	for (const [index, tool] of archive.tools.entries()) {
 		upsertRestoredTimelineItem(timeline, {
 			id: tool.toolCallId ?? `${tool.toolName}-${index}`,
@@ -1756,6 +1849,65 @@ function archiveMessageKey(message: { role: "user" | "assistant" | "system"; tex
 	return `${message.role}\u0000${message.text}`;
 }
 
+/**
+ * Group a flat list of reasoning deltas into per-segment "thinking" timeline items.
+ * A segment is the run of thinking that precedes one tool call (or the final answer);
+ * here it is detected by a gap in record sequence (other events sit between segments)
+ * or a content-index reset (a new assistant step). Each item is ordered by its first
+ * delta's sequence so it interleaves correctly with the tool items it precedes.
+ */
+function buildThinkingTimelineItems(
+	thinking: RestoredThinkingDelta[],
+	sessionId: string,
+	defaultTimestamp: number,
+): TimelineItem[] {
+	const items: TimelineItem[] = [];
+	let segment: { firstSequence: number; lastSequence: number; contentIndex?: number; parts: string[] } | undefined;
+	const flush = (): void => {
+		if (!segment) return;
+		const text = segment.parts.join("").trim();
+		if (text) {
+			items.push({
+				id: `${sessionId}-thinking-${segment.firstSequence}`,
+				kind: "thinking",
+				title: "已深度思考",
+				detail: text,
+				status: "succeeded",
+				timestamp: defaultTimestamp,
+				order: segment.firstSequence,
+			});
+		}
+		segment = undefined;
+	};
+	const sorted = [...thinking].sort(
+		(left, right) => left.sequence - right.sequence || (left.contentIndex ?? 0) - (right.contentIndex ?? 0),
+	);
+	for (const delta of sorted) {
+		const startsNewSegment =
+			!segment ||
+			delta.sequence - segment.lastSequence > 1 ||
+			(delta.contentIndex !== undefined &&
+				segment.contentIndex !== undefined &&
+				delta.contentIndex < segment.contentIndex);
+		if (startsNewSegment) {
+			flush();
+			segment = {
+				firstSequence: delta.sequence,
+				lastSequence: delta.sequence,
+				contentIndex: delta.contentIndex,
+				parts: [],
+			};
+		}
+		const active = segment;
+		if (!active) continue;
+		active.parts.push(delta.delta);
+		active.lastSequence = delta.sequence;
+		if (delta.contentIndex !== undefined) active.contentIndex = delta.contentIndex;
+	}
+	flush();
+	return items;
+}
+
 function buildHistoryDisplaySourceFromRecords(
 	records: ConversationArchiveRecord[],
 	sessionId: string,
@@ -1795,7 +1947,28 @@ function rebuildArchiveStateFromRecords(
 } {
 	const messages: ChatMessageView[] = [];
 	const timeline: TimelineItem[] = [];
+	// Reasoning is reconstructed one segment at a time (the run between two tool
+	// calls), mirroring the live path. A segment opens on the first thinking delta
+	// and is committed as its own ordered "thinking" timeline item when its step's
+	// message_end arrives, so it interleaves correctly with the tool calls.
+	let currentThinking: { firstSequence: number; parts: string[] } | undefined;
 	let pendingConfirmations: PendingConfirmation[] = [];
+
+	const commitThinkingSegment = (authoritativeText: string | undefined, fallbackOrder: number, ts: number): void => {
+		const text = (authoritativeText ?? currentThinking?.parts.join("") ?? "").trim();
+		const order = currentThinking?.firstSequence ?? fallbackOrder;
+		currentThinking = undefined;
+		if (!text) return;
+		upsertRestoredTimelineItem(timeline, {
+			id: `${sessionId}-thinking-${order}`,
+			kind: "thinking",
+			title: "已深度思考",
+			detail: text,
+			status: "succeeded",
+			timestamp: ts,
+			order,
+		});
+	};
 
 	for (const record of records) {
 		const timestamp = Date.parse(record.recordedAt) || Date.now();
@@ -1818,7 +1991,11 @@ function rebuildArchiveStateFromRecords(
 			if (eventType === "message_end") {
 				const role = getNestedStringFieldFromRecord(record.payload, ["message", "role"]);
 				if (role === "assistant") {
-					const text = extractTextFromRecordMessage(getNestedFieldFromRecord(record.payload, ["message"]));
+					const messagePayload = getNestedFieldFromRecord(record.payload, ["message"]);
+					// Close this step's reasoning as its own box (ordered before the step's
+					// text and tools) instead of folding it into the message bubble.
+					commitThinkingSegment(extractThinkingFromRecordMessage(messagePayload), record.sequence, timestamp);
+					const text = extractTextFromRecordMessage(messagePayload);
 					if (text) {
 						messages.push({
 							id: `${sessionId}-msg-${record.sequence}`,
@@ -1835,6 +2012,8 @@ function rebuildArchiveStateFromRecords(
 				continue;
 			}
 			if (eventType === "agent_end") {
+				// Safety net for reasoning a missing message_end never closed.
+				commitThinkingSegment(undefined, record.sequence, timestamp);
 				const assistantText = extractLatestAssistantTextFromRecordMessages(
 					getNestedFieldFromRecord(record.payload, ["messages"]),
 				);
@@ -1863,6 +2042,20 @@ function rebuildArchiveStateFromRecords(
 							order: record.sequence,
 						});
 					}
+				}
+				continue;
+			}
+			if (eventType === "message_update") {
+				const assistantEventType = getNestedStringFieldFromRecord(record.payload, [
+					"assistantMessageEvent",
+					"type",
+				]);
+				if (assistantEventType === "thinking_delta") {
+					const delta = getNestedStringFieldFromRecord(record.payload, ["assistantMessageEvent", "delta"]) ?? "";
+					if (!currentThinking) {
+						currentThinking = { firstSequence: record.sequence, parts: [] };
+					}
+					currentThinking.parts.push(delta);
 				}
 				continue;
 			}
@@ -1936,6 +2129,9 @@ function rebuildArchiveStateFromRecords(
 				if (item?.kind === "compaction") {
 					upsertRestoredTimelineItem(timeline, { ...item, order: record.sequence });
 				}
+				// "thinking" timeline items are also archived here, but we rebuild them from
+				// the thinking deltas above (ordered by their first delta's sequence so they
+				// land before the step's answer), so restoring them here would duplicate.
 			}
 			continue;
 		}
@@ -2045,6 +2241,13 @@ function getNestedBooleanFieldFromRecord(value: unknown, path: string[]): boolea
 	return typeof field === "boolean" ? field : undefined;
 }
 
+// Reserved helper for upcoming numeric-field extraction; underscore-prefixed to
+// satisfy the lint "no unused" rule until it's wired up.
+function _getNestedNumberFieldFromRecord(value: unknown, path: string[]): number | undefined {
+	const field = getNestedFieldFromRecord(value, path);
+	return typeof field === "number" && Number.isFinite(field) ? field : undefined;
+}
+
 function getStringFieldFromRecord(value: unknown, key: string): string | undefined {
 	if (typeof value !== "object" || value === null) return undefined;
 	const field = (value as Record<string, unknown>)[key];
@@ -2064,6 +2267,23 @@ function extractTextFromRecordMessage(message: unknown): string | undefined {
 		.join("")
 		.trim();
 	return text || undefined;
+}
+
+function extractThinkingFromRecordMessage(message: unknown): string | undefined {
+	if (typeof message !== "object" || message === null) return undefined;
+	const content = (message as Record<string, unknown>).content;
+	if (!Array.isArray(content)) return undefined;
+	const thinking = content
+		.map((item) => {
+			if (typeof item !== "object" || item === null) return "";
+			const part = item as Record<string, unknown>;
+			if (part.type !== "thinking") return "";
+			if (part.redacted === true) return REDACTED_THINKING_PLACEHOLDER;
+			return typeof part.thinking === "string" ? part.thinking : "";
+		})
+		.join("")
+		.trim();
+	return thinking || undefined;
 }
 
 function extractLatestAssistantTextFromRecordMessages(messages: unknown): string | undefined {
@@ -2164,6 +2384,7 @@ function isTimelineKind(value: string): value is TimelineItem["kind"] {
 		value === "agent" ||
 		value === "assistant" ||
 		value === "thinking_summary" ||
+		value === "thinking" ||
 		value === "tool" ||
 		value === "confirmation" ||
 		value === "voice" ||

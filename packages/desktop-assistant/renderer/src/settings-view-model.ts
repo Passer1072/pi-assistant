@@ -1,23 +1,4 @@
-import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, DEFAULT_VOICE_STT_MODEL_BY_PROVIDER, type DesktopAssistantSettings, type DesktopCapabilityId } from "../../src/shared/types.ts";
-
-export const capabilityLabels: Record<DesktopCapabilityId, { title: string; description: string }> = {
-	system: {
-		title: "系统操作",
-		description: "后台命令、系统 API、窗口、键鼠和安全 PowerShell。优先直接完成操作，设置页仅兜底。",
-	},
-	document: {
-		title: "文档操作",
-		description: "后续用于文档创建、编辑、排版和导出。",
-	},
-	ppt: {
-		title: "PPT 操作",
-		description: "后续用于演示文稿、幻灯片、讲稿和导出。",
-	},
-	excel: {
-		title: "Excel 操作",
-		description: "后续用于表格编辑、公式、数据整理和导出。",
-	},
-};
+import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, DEFAULT_VOICE_STT_MODEL_BY_PROVIDER, type DesktopAssistantSettings } from "../../src/shared/types.ts";
 
 export const PROVIDERS: { id: string; label: string; models: { id: string; label: string }[] }[] = [
 	{

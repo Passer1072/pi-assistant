@@ -17,6 +17,12 @@ export interface VoiceControllerOptions {
 	refreshHistory: () => Promise<void>;
 	onWarning: (message: string) => void;
 	onPartialTranscript: (text: string) => void;
+	/**
+	 * Runs once just before each voice capture begins (manual or wake-triggered),
+	 * before the active run is interrupted. The home page uses it to start a fresh
+	 * conversation so every voice input on the landing page is its own conversation.
+	 */
+	onBeforeInput?: () => Promise<void> | void;
 }
 
 export class VoiceController {
@@ -25,6 +31,7 @@ export class VoiceController {
 	private refreshHistory: () => Promise<void>;
 	private onWarning: (message: string) => void;
 	private onPartialTranscript: (text: string) => void;
+	private onBeforeInput: (() => Promise<void> | void) | undefined;
 	private stream: MediaStream | undefined;
 	private wakeDetector: WakeWordDetector | undefined;
 	private recorder: VoiceRecorder | undefined;
@@ -42,6 +49,7 @@ export class VoiceController {
 		this.refreshHistory = options.refreshHistory;
 		this.onWarning = options.onWarning;
 		this.onPartialTranscript = options.onPartialTranscript;
+		this.onBeforeInput = options.onBeforeInput;
 	}
 
 	async startWakeListening(): Promise<void> {
@@ -178,6 +186,13 @@ export class VoiceController {
 		if (this.inputActive) return;
 		this.inputActive = true;
 		this.stopWakeDetector();
+		// Let the host start a fresh conversation first (home page: every voice input
+		// is its own conversation) before we touch the focused session.
+		try {
+			await this.onBeforeInput?.();
+		} catch (error) {
+			console.warn("onBeforeInput hook failed:", error);
+		}
 		// A wake word fired while the previous turn may still be running: interrupt the
 		// focused session's model + in-flight actions before capturing the new command.
 		await this.interruptActiveRun();

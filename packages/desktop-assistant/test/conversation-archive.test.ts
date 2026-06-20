@@ -395,6 +395,130 @@ describe("conversation archive", () => {
 		}
 	});
 
+	it("restores archived thinking as its own ordered thinking boxes interleaved with the turn", async () => {
+		const workspace = createTempWorkspace();
+		try {
+			const service = new DesktopAgentService({
+				cwd: workspace.cwd,
+				agentDir: workspace.agentDir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+
+			await service.initialize();
+			const sessionId = service.snapshot().sessionId;
+			writeArchiveRecords(workspace.cwd, sessionId, [
+				createArchiveRecord(sessionId, 1, "user_prompt_received", { message: "first" }),
+				createArchiveRecord(sessionId, 2, "agent_event", {
+					type: "message_update",
+					assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "first thought " },
+				}),
+				createArchiveRecord(sessionId, 3, "agent_event", {
+					type: "message_update",
+					assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "continues" },
+				}),
+				createArchiveRecord(sessionId, 4, "agent_event", {
+					type: "message_end",
+					message: createAssistantMessage("first reply"),
+				}),
+				createArchiveRecord(sessionId, 5, "user_prompt_received", { message: "second" }),
+				createArchiveRecord(sessionId, 6, "agent_event", {
+					type: "message_update",
+					assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "second thought" },
+				}),
+				createArchiveRecord(sessionId, 7, "agent_event", {
+					type: "message_end",
+					message: createAssistantMessage("second reply"),
+				}),
+			]);
+			ensureArchivedSessionFile(workspace.cwd, sessionId);
+
+			await service.newConversation();
+			const resumed = await service.resumeConversation(sessionId);
+			const assistantMessages = resumed.messages.filter((message) => message.role === "assistant");
+
+			expect(assistantMessages.map((message) => message.text)).toEqual(["first reply", "second reply"]);
+			// Reasoning is no longer glued onto the message; each step's thinking is its own
+			// ordered box that sorts ahead of that step's reply (order 2 < 4, order 6 < 7).
+			const thinkingBoxes = resumed.timeline
+				.filter((item) => item.kind === "thinking")
+				.sort((left, right) => left.order - right.order);
+			expect(thinkingBoxes.map((item) => item.detail)).toEqual(["first thought continues", "second thought"]);
+			const firstReply = resumed.messages.find((message) => message.text === "first reply");
+			expect(thinkingBoxes[0]?.order).toBeLessThan(firstReply?.order ?? Number.POSITIVE_INFINITY);
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	it("opens a new thinking box per step, interleaved in order with the tool calls", async () => {
+		const workspace = createTempWorkspace();
+		try {
+			const service = new DesktopAgentService({
+				cwd: workspace.cwd,
+				agentDir: workspace.agentDir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+			const internal = service as unknown as {
+				sessionManager: { getSessionId(): string; getSessionFile(): string | undefined };
+				bindSession(session: {
+					sessionId: string;
+					sessionFile?: string;
+					sessionName?: string;
+					prompt(message: string, options?: unknown): Promise<void>;
+					subscribe(listener: (event: unknown) => void): () => void;
+				}): void;
+				handleSessionEvent(event: unknown): void;
+			};
+			internal.bindSession({
+				sessionId: internal.sessionManager.getSessionId(),
+				sessionFile: internal.sessionManager.getSessionFile(),
+				sessionName: "thinking-segments",
+				prompt: async () => {},
+				subscribe: () => () => {},
+			});
+
+			await service.prompt("plan and act");
+			// Step 1: reason, then call a tool (tool-only step → empty text on message_end).
+			internal.handleSessionEvent({
+				type: "message_update",
+				assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "reason A" },
+			});
+			internal.handleSessionEvent({ type: "message_end", message: createAssistantMessage("") });
+			internal.handleSessionEvent({
+				type: "tool_execution_start",
+				toolCallId: "tool-1",
+				toolName: "open_app",
+				args: { app: "notepad.exe" },
+			});
+			internal.handleSessionEvent({
+				type: "tool_execution_end",
+				toolCallId: "tool-1",
+				toolName: "open_app",
+				result: { ok: true },
+				isError: false,
+			});
+			// Step 2: fresh reasoning, then the final answer.
+			internal.handleSessionEvent({
+				type: "message_update",
+				assistantMessageEvent: { type: "thinking_delta", contentIndex: 0, delta: "reason B" },
+			});
+			internal.handleSessionEvent({ type: "message_end", message: createAssistantMessage("all done") });
+
+			const timeline = service.snapshot().timeline;
+			const thinkingBoxes = timeline
+				.filter((item) => item.kind === "thinking")
+				.sort((left, right) => left.order - right.order);
+			// Two distinct boxes — not one continuous block fused across the tool call.
+			expect(thinkingBoxes.map((item) => item.detail)).toEqual(["reason A", "reason B"]);
+			const toolOrder = timeline.find((item) => item.kind === "tool")?.order ?? Number.NaN;
+			// Order: reason A (box) → tool → reason B (box).
+			expect(thinkingBoxes[0].order).toBeLessThan(toolOrder);
+			expect(toolOrder).toBeLessThan(thinkingBoxes[1].order);
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
 	it("creates a fresh archive directory and index entry for each new conversation", async () => {
 		const workspace = createTempWorkspace();
 		try {

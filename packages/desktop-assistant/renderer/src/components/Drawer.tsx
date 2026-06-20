@@ -1,14 +1,15 @@
 import {
 	ArrowLeft,
 	ChevronRight,
+	Home,
+	ListTodo,
 	Loader2,
-	MessageSquarePlus,
 	Settings as SettingsIcon,
 	Trash2,
 	X,
 } from "lucide-react";
-import type { SessionRunStatus, SessionSummary } from "../../../src/shared/types.ts";
-import type { StoredConversation } from "../app-types.ts";
+import type { MemoSummary, SessionRunStatus, SessionSummary } from "../../../src/shared/types.ts";
+import type { Route, StoredConversation } from "../app-types.ts";
 import { formatTime } from "../formatters.ts";
 
 const STATUS_LABEL: Record<SessionRunStatus, string> = {
@@ -34,11 +35,9 @@ type DrawerConversationItem =
 	  };
 
 function SessionStatusIndicator({ session }: { session: SessionSummary }) {
-	// Yellow dot — a desktop action is waiting for the user's approval.
 	if (session.pendingConfirmationCount > 0) {
 		return <span className="session-dot dot-awaiting" title="等待批准" aria-label="等待批准" />;
 	}
-	// Blue dot — a background run finished and hasn't been viewed yet.
 	if (session.unreadCompletion) {
 		return <span className="session-dot dot-completed" title="已完成（未读）" aria-label="已完成（未读）" />;
 	}
@@ -65,7 +64,10 @@ export function Drawer({
 	sessions,
 	focusedSessionId,
 	conversations,
-	onNewChat,
+	activeRoute,
+	memoSummary,
+	onOpenHome,
+	onOpenMemo,
 	onOpenSettings,
 	activeId,
 	loadingId,
@@ -80,7 +82,10 @@ export function Drawer({
 	sessions: SessionSummary[];
 	focusedSessionId?: string;
 	conversations: StoredConversation[];
-	onNewChat: () => void;
+	activeRoute?: Route;
+	memoSummary?: MemoSummary;
+	onOpenHome: () => void;
+	onOpenMemo: () => void;
 	onOpenSettings: () => void;
 	activeId: string | null;
 	loadingId?: string;
@@ -89,6 +94,7 @@ export function Drawer({
 	onCloseSession: (id: string) => void;
 	onDelete: (id: string) => void;
 }) {
+	const memoBadge = (memoSummary?.overdueCount ?? 0) + (memoSummary?.dueTodayCount ?? 0);
 	const liveSessionIds = new Set(sessions.map((session) => session.sessionId));
 	const archivedConversations = conversations.filter((conversation) => !liveSessionIds.has(conversation.sessionId));
 	const conversationItems: DrawerConversationItem[] = [
@@ -119,9 +125,23 @@ export function Drawer({
 					</div>
 				)}
 
-				<button className="drawer-new" type="button" onClick={onNewChat}>
-					<MessageSquarePlus size={15} />
-					<span>新建并行会话</span>
+				<button
+					className={`drawer-nav ${activeRoute === "home" ? "active" : ""}`}
+					type="button"
+					onClick={onOpenHome}
+				>
+					<Home size={15} />
+					<span>首页</span>
+				</button>
+
+				<button
+					className={`drawer-nav ${activeRoute === "memo" ? "active" : ""}`}
+					type="button"
+					onClick={onOpenMemo}
+				>
+					<ListTodo size={15} />
+					<span>备忘录</span>
+					{memoBadge > 0 ? <span className="drawer-badge">{memoBadge}</span> : null}
 				</button>
 
 				<div className="drawer-section-label">会话列表</div>

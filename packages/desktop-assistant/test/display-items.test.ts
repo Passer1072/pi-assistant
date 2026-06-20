@@ -80,6 +80,68 @@ describe("buildDisplayItems", () => {
 		expect(items[1]?.kind).toBe("tool");
 	});
 
+	it("interleaves per-segment thinking boxes with the tool calls they precede", () => {
+		const messages: ChatMessageView[] = [
+			{ id: "user", role: "user", text: "go", timestamp: 1_000, order: 1 },
+			{ id: "answer", role: "assistant", text: "done", timestamp: 6_000, order: 6 },
+		];
+		const timeline: TimelineItem[] = [
+			{
+				id: "think-2",
+				kind: "thinking",
+				title: "已深度思考",
+				detail: "reason A",
+				status: "succeeded",
+				timestamp: 2_000,
+				order: 2,
+			},
+			{
+				id: "tool-3",
+				kind: "tool",
+				title: "Tool finished: open_app",
+				status: "succeeded",
+				timestamp: 3_000,
+				order: 3,
+				detail: "{}",
+			},
+			{
+				id: "think-4",
+				kind: "thinking",
+				title: "已深度思考",
+				detail: "reason B",
+				status: "succeeded",
+				timestamp: 4_000,
+				order: 4,
+			},
+			{
+				id: "tool-5",
+				kind: "tool",
+				title: "Tool finished: type_text",
+				status: "succeeded",
+				timestamp: 5_000,
+				order: 5,
+				detail: "{}",
+			},
+		];
+
+		const items = buildDisplayItems(messages, timeline);
+
+		expect(
+			items.map((item) =>
+				item.kind === "message"
+					? `msg:${item.message.role}`
+					: `${item.kind}:${item.kind === "thinking" ? item.item.detail : item.item.title}`,
+			),
+		).toEqual([
+			"msg:user",
+			"thinking:reason A",
+			"tool:Tool finished: open_app",
+			"thinking:reason B",
+			"tool:Tool finished: type_text",
+			"msg:assistant",
+		]);
+	});
+
 	it("inserts compaction notices into the conversation flow", () => {
 		const messages: ChatMessageView[] = [
 			{ id: "user", role: "user", text: "go", timestamp: 1_000, order: 1 },

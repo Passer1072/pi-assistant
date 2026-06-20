@@ -1,16 +1,16 @@
-import { Brain, Check, ChevronDown, ChevronUp, FileText, Loader2, Mic, Send, Sparkles, Square, Volume2, X } from "lucide-react";
-import { memo, useCallback, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { BellRing, Brain, Check, ChevronDown, ChevronUp, FileText, Loader2, Mic, Send, Sparkles, Square, Volume2, X } from "lucide-react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
 	ChatMessageView,
 	DesktopAssistantSnapshot,
 	PendingConfirmation,
 	PendingPromptAttachment,
-	PromptAttachmentKind,
 	TimelineItem,
 	WakeWordModelMetadata,
 	WindowMode,
 } from "../../../src/shared/types.ts";
 import { AssistantMessageMarkdown } from "../AssistantMessageMarkdown.tsx";
+import { attachmentsFromFiles, attachmentsFromText, formatAttachmentSize } from "./attachments.ts";
 import { buildDisplayItems, type DisplayItem } from "../display-items.ts";
 import { PetLayer, type PetLayerHandle } from "../pet/PetLayer.tsx";
 import type { PetConfig } from "../pet/types.ts";
@@ -22,28 +22,6 @@ function formatToolName(rawTitle: string): string {
 	const m = rawTitle.match(/Tool (?:started|finished|running):\s*(.+)/i);
 	const name = m ? m[1] : rawTitle;
 	return name.replace(/_/g, " ");
-}
-
-function inferAttachmentKind(name: string, mimeType?: string): PromptAttachmentKind {
-	const lowerName = name.toLowerCase();
-	if (lowerName.endsWith(".docx") || lowerName.endsWith(".doc")) return "word";
-	if (lowerName.endsWith(".xlsx") || lowerName.endsWith(".xls") || lowerName.endsWith(".xlsm")) return "excel";
-	if (lowerName.endsWith(".pptx") || lowerName.endsWith(".ppt")) return "powerpoint";
-	if (lowerName.endsWith(".pdf")) return "pdf";
-	if (mimeType?.startsWith("image/") || /\.(png|jpe?g|gif|webp|bmp)$/i.test(name)) return "image";
-	if (
-		mimeType?.startsWith("text/") ||
-		/\.(txt|md|markdown|json|jsonl|csv|tsv|log|xml|html?|css|jsx?|tsx?|py|ps1|ya?ml|toml|ini)$/i.test(name)
-	) {
-		return "text";
-	}
-	return "unknown";
-}
-
-function formatAttachmentSize(sizeBytes: number): string {
-	if (sizeBytes < 1024) return `${sizeBytes} B`;
-	if (sizeBytes < 1024 * 1024) return `${(sizeBytes / 1024).toFixed(1)} KB`;
-	return `${(sizeBytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
 function formatTokenCount(tokens: number): string {
@@ -93,37 +71,6 @@ const VIRTUALIZATION_THRESHOLD = 80;
 
 function isThreadAtBottom(el: HTMLElement): boolean {
 	return el.scrollHeight - el.scrollTop - el.clientHeight <= THREAD_BOTTOM_THRESHOLD_PX;
-}
-
-function attachmentsFromFiles(files: Iterable<File>): PendingPromptAttachment[] {
-	const attachments: PendingPromptAttachment[] = [];
-	for (const file of files) {
-		const path = window.desktopAssistant?.getPathForFile(file);
-		if (!path) continue;
-		attachments.push({
-			id: crypto.randomUUID(),
-			name: file.name,
-			path,
-			sizeBytes: file.size,
-			mimeType: file.type || undefined,
-			kind: inferAttachmentKind(file.name, file.type || undefined),
-		});
-	}
-	return attachments;
-}
-
-function attachmentsFromText(text: string): PendingPromptAttachment[] {
-	return text
-		.split(/\r?\n/)
-		.map((line) => line.trim())
-		.filter((line) => /^[a-z]:\\.+\.[^\\/:*?"<>|]+$/i.test(line) || /^\\\\[^\\]+\\.+/i.test(line))
-		.map((path) => ({
-			id: crypto.randomUUID(),
-			name: path.split(/[\\/]/).pop() ?? path,
-			path,
-			sizeBytes: 0,
-			kind: inferAttachmentKind(path),
-		}));
 }
 
 interface ToolDetail {
@@ -219,6 +166,39 @@ function ToolCallEntry({
 
 const MemoToolCallEntry = memo(ToolCallEntry);
 
+function ThinkingBlock({
+	text,
+	expanded,
+	onToggle,
+	streaming,
+}: {
+	text: string;
+	expanded: boolean;
+	onToggle: () => void;
+	streaming?: boolean;
+}) {
+	return (
+		<div className={`thinking-block ${streaming ? "streaming" : "static"}`}>
+			<button className="thinking-block-header" type="button" onClick={onToggle} aria-expanded={expanded}>
+				<span className="thinking-block-icon">
+					<Brain size={12} />
+				</span>
+				<span className="thinking-block-title">{streaming ? "思考中..." : "已深度思考"}</span>
+				<span className="thinking-block-chevron">
+					{expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
+				</span>
+			</button>
+			{expanded ? (
+				<div className="thinking-block-body">
+					<pre>{text}{streaming ? <span className="streaming-cursor" /> : null}</pre>
+				</div>
+			) : null}
+		</div>
+	);
+}
+
+const MemoThinkingBlock = memo(ThinkingBlock);
+
 // ─────────────────────────────────────────────────────────────────────────────
 
 function ThinkingDots() {
@@ -271,7 +251,11 @@ function ThreadNotice({ item }: { item: TimelineItem }) {
 
 const MemoThreadNotice = memo(ThreadNotice);
 
-const MessageBubbleRow = memo(function MessageBubbleRow({ message }: { message: ChatMessageView }) {
+const MessageBubbleRow = memo(function MessageBubbleRow({
+	message,
+}: {
+	message: ChatMessageView;
+}) {
 	const tokenUsageText = message.role === "assistant" ? formatMessageTokenUsage(message) : undefined;
 	return (
 		<div className={`bubble-row ${message.role}`}>
@@ -304,14 +288,18 @@ function VirtualChatList({
 	viewportHeight,
 	threadVersion,
 	expandedTools,
+	expandedThinking,
 	onToggleTool,
+	onToggleThinking,
 }: {
 	items: DisplayItem[];
 	scrollTop: number;
 	viewportHeight: number;
 	threadVersion: number;
 	expandedTools: Set<string>;
+	expandedThinking: Set<string>;
 	onToggleTool: (id: string) => void;
+	onToggleThinking: (id: string) => void;
 }) {
 	const listRef = useRef<HTMLDivElement>(null);
 	const itemRefs = useRef(new Map<string, HTMLDivElement>());
@@ -396,7 +384,13 @@ function VirtualChatList({
 				const key = displayItemKey(item);
 				return (
 					<div key={key} ref={setItemRef(key)} className="virtual-chat-item">
-						<DisplayItemRow item={item} expandedTools={expandedTools} onToggleTool={onToggleTool} />
+						<DisplayItemRow
+							item={item}
+							expandedTools={expandedTools}
+							expandedThinking={expandedThinking}
+							onToggleTool={onToggleTool}
+							onToggleThinking={onToggleThinking}
+						/>
 					</div>
 				);
 			})}
@@ -412,14 +406,30 @@ const MemoVirtualChatList = memo(VirtualChatList);
 function DisplayItemRow({
 	item,
 	expandedTools,
+	expandedThinking,
 	onToggleTool,
+	onToggleThinking,
 }: {
 	item: DisplayItem;
 	expandedTools: Set<string>;
+	expandedThinking: Set<string>;
 	onToggleTool: (id: string) => void;
+	onToggleThinking: (id: string) => void;
 }) {
 	if (item.kind === "notice") {
 		return <MemoThreadNotice item={item.item} />;
+	}
+	if (item.kind === "thinking") {
+		const t = item.item;
+		return (
+			<div className="bubble-row assistant">
+				<MemoThinkingBlock
+					text={t.detail ?? ""}
+					expanded={expandedThinking.has(t.id)}
+					onToggle={() => onToggleThinking(t.id)}
+				/>
+			</div>
+		);
 	}
 	if (item.kind === "tool") {
 		const t = item.item;
@@ -493,6 +503,7 @@ export function ChatView({
 	onStartVoice,
 	onAbort,
 	onMenu,
+	onOpenMemo,
 	windowMode,
 	onToggleWindowMode,
 	onLoadEarlierHistory,
@@ -516,6 +527,7 @@ export function ChatView({
 	onStartVoice: () => void;
 	onAbort: () => void;
 	onMenu: () => void;
+	onOpenMemo: () => void;
 	windowMode: WindowMode;
 	onToggleWindowMode: () => void;
 	onLoadEarlierHistory: () => void;
@@ -531,7 +543,13 @@ export function ChatView({
 	const suppressStreamingAutoScrollRef = useRef(false);
 	const [showJumpToLatest, setShowJumpToLatest] = useState(false);
 	const [expandedTools, setExpandedTools] = useState<Set<string>>(new Set());
+	const [expandedThinking, setExpandedThinking] = useState<Set<string>>(new Set());
+	const [liveThinkingExpanded, setLiveThinkingExpanded] = useState(true);
+	const previousStreamingTextRef = useRef(snapshot.streamingText);
+	const previousStreamingThinkingRef = useRef(snapshot.streamingThinking);
+	const previousIsAnsweringRef = useRef(snapshot.isRunning || loadingHistory);
 	const [threadScrollState, setThreadScrollState] = useState({ scrollTop: 0, viewportHeight: 0, version: 0 });
+	const [memoBannerDismissed, setMemoBannerDismissed] = useState(false);
 
 	// 输入框随内容自然增高，最多 6 行；第 7 行起停止增高并显示滚动条。
 	useLayoutEffect(() => {
@@ -552,6 +570,15 @@ export function ChatView({
 
 	const toggleTool = useCallback((id: string) => {
 		setExpandedTools((prev) => {
+			const next = new Set(prev);
+			if (next.has(id)) next.delete(id);
+			else next.add(id);
+			return next;
+		});
+	}, []);
+
+	const toggleThinking = useCallback((id: string) => {
+		setExpandedThinking((prev) => {
 			const next = new Set(prev);
 			if (next.has(id)) next.delete(id);
 			else next.add(id);
@@ -643,7 +670,7 @@ export function ChatView({
 			});
 		});
 		return () => cancelAnimationFrame(id);
-	}, [snapshot.streamingText, loadingEarlierHistory]);
+	}, [snapshot.streamingText, snapshot.streamingThinking, loadingEarlierHistory]);
 
 	useLayoutEffect(() => {
 		if (loadingEarlierHistory) return;
@@ -678,7 +705,7 @@ export function ChatView({
 		if (!el) return;
 		if (
 			suppressStreamingAutoScrollRef.current ||
-			(snapshot.streamingText && isFollowingLatestRef.current && isThreadAtBottom(el))
+			((snapshot.streamingText || snapshot.streamingThinking) && isFollowingLatestRef.current && isThreadAtBottom(el))
 		) {
 			suppressStreamingAutoScrollRef.current = false;
 			return;
@@ -692,6 +719,20 @@ export function ChatView({
 	};
 
 	const isAnswering = snapshot.isRunning || loadingHistory;
+	useEffect(() => {
+		const previousStreamingText = previousStreamingTextRef.current;
+		const previousStreamingThinking = previousStreamingThinkingRef.current;
+		const previousIsAnswering = previousIsAnsweringRef.current;
+		if ((!previousIsAnswering && isAnswering) || (!previousStreamingThinking && snapshot.streamingThinking)) {
+			setLiveThinkingExpanded(true);
+		}
+		if (!previousStreamingText && snapshot.streamingText) {
+			setLiveThinkingExpanded(false);
+		}
+		previousStreamingTextRef.current = snapshot.streamingText;
+		previousStreamingThinkingRef.current = snapshot.streamingThinking;
+		previousIsAnsweringRef.current = isAnswering;
+	}, [isAnswering, snapshot.streamingText, snapshot.streamingThinking]);
 	const canSend = prompt.trim().length > 0 || attachments.length > 0;
 	const conversationThinking = snapshot.conversationThinking;
 	const thinkingSupported = conversationThinking.supported;
@@ -719,6 +760,30 @@ export function ChatView({
 				onToggleWindowMode={onToggleWindowMode}
 			/>
 			<div className="thread" ref={scrollRef} onScroll={handleThreadScroll}>
+				{(() => {
+					const due = (snapshot.memoSummary?.overdueCount ?? 0) + (snapshot.memoSummary?.dueTodayCount ?? 0);
+					if (due === 0 || memoBannerDismissed) return null;
+					const overdue = snapshot.memoSummary?.overdueCount ?? 0;
+					return (
+						<div className="chat-memo-banner" onClick={onOpenMemo}>
+							<BellRing size={14} />
+							<span className="chat-memo-banner-text">
+								{overdue > 0 ? `有 ${overdue} 项待办已逾期` : `今天有 ${due} 项待办`}，点击查看
+							</span>
+							<button
+								type="button"
+								className="chat-memo-banner-close"
+								onClick={(event) => {
+									event.stopPropagation();
+									setMemoBannerDismissed(true);
+								}}
+								aria-label="关闭提醒"
+							>
+								<X size={13} />
+							</button>
+						</div>
+					);
+				})()}
 				{loadingHistory ? (
 					<div className="history-loading">
 						<Loader2 size={14} className="spin" />
@@ -762,7 +827,9 @@ export function ChatView({
 						viewportHeight={threadScrollState.viewportHeight}
 						threadVersion={threadScrollState.version}
 						expandedTools={expandedTools}
+						expandedThinking={expandedThinking}
 						onToggleTool={toggleTool}
+						onToggleThinking={toggleThinking}
 					/>
 				) : null}
 
@@ -777,11 +844,29 @@ export function ChatView({
 										<Sparkles size={11} />
 										<span>助手</span>
 									</div>
+									{snapshot.streamingThinking ? (
+										<MemoThinkingBlock
+											text={snapshot.streamingThinking}
+											expanded={liveThinkingExpanded}
+											onToggle={() => setLiveThinkingExpanded((current) => !current)}
+										/>
+									) : null}
 									<p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{snapshot.streamingText}</p>
 									<span className="streaming-cursor" />
 								</>
 							) : (
-								<ThinkingDots />
+								<>
+									{snapshot.streamingThinking ? (
+										<MemoThinkingBlock
+											streaming
+											text={snapshot.streamingThinking}
+											expanded={liveThinkingExpanded}
+											onToggle={() => setLiveThinkingExpanded((current) => !current)}
+										/>
+									) : (
+										<ThinkingDots />
+									)}
+								</>
 							)}
 						</div>
 					</div>

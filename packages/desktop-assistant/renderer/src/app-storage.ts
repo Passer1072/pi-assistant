@@ -2,6 +2,7 @@ import type { DesktopAssistantSettings, WindowMode } from "../../src/shared/type
 
 export const SETTINGS_STORAGE_KEY = "pi-settings";
 export const WINDOW_MODE_STORAGE_KEY = "pi-window-mode";
+export const WINDOW_ALWAYS_ON_TOP_STORAGE_KEY = "pi-window-always-on-top";
 
 export function persistSettings(settings: DesktopAssistantSettings): void {
 	try {
@@ -58,5 +59,21 @@ export function loadWindowMode(): WindowMode {
 		return localStorage.getItem(WINDOW_MODE_STORAGE_KEY) === "expanded" ? "expanded" : "compact";
 	} catch {
 		return "compact";
+	}
+}
+
+export function persistWindowAlwaysOnTop(enabled: boolean): void {
+	try {
+		localStorage.setItem(WINDOW_ALWAYS_ON_TOP_STORAGE_KEY, enabled ? "true" : "false");
+	} catch {
+		// Ignore storage errors.
+	}
+}
+
+export function loadWindowAlwaysOnTop(): boolean {
+	try {
+		return localStorage.getItem(WINDOW_ALWAYS_ON_TOP_STORAGE_KEY) === "true";
+	} catch {
+		return false;
 	}
 }

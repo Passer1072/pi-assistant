@@ -20,8 +20,13 @@ const TITLE_TIMEOUT_MS = 8000;
 const USER_MESSAGE_LIMIT = 500;
 const ASSISTANT_MESSAGE_LIMIT = 200;
 const TITLE_MAX_CHARS = 20;
+// A title is short, but give a little headroom over the raw character budget so the
+// model is never truncated mid-title (e.g. a 12-Hanzi title can be ~16-20 tokens).
+const TITLE_MAX_TOKENS = 48;
 const TITLE_SYSTEM_PROMPT =
-	"\u4f60\u662f\u4f1a\u8bdd\u6807\u9898\u751f\u6210\u5668\u3002\u6839\u636e\u7528\u6237\u7684\u9996\u6761\u6d88\u606f\uff08\u53ca\u53ef\u9009\u7684\u52a9\u624b\u56de\u590d\uff09\u603b\u7ed3\u4e00\u4e2a\u7b80\u77ed\u6807\u9898\u3002\u8981\u6c42\uff1a\u76f4\u63a5\u8f93\u51fa\u6807\u9898\u672c\u8eab\uff1b\u4e0d\u8d85\u8fc712\u4e2a\u6c49\u5b57\u621620\u4e2a\u82f1\u6587\u5b57\u7b26\uff1b\u4e0d\u8981\u6807\u70b9\u3001\u5f15\u53f7\u3001\u4e66\u540d\u53f7\u3001\u53e5\u53f7\uff1b\u4e0d\u8981\u89e3\u91ca\uff1b\u7528\u4e0e\u7528\u6237\u76f8\u540c\u7684\u8bed\u8a00\u3002";
+	"\u4f60\u662f\u4e00\u4e2a\u4f1a\u8bdd\u6807\u9898\u751f\u6210\u5668\uff0c\u552f\u4e00\u4efb\u52a1\u662f\u4e3a\u8fd9\u6bb5\u5bf9\u8bdd\u8d77\u4e00\u4e2a\u7b80\u77ed\u6807\u9898\u3002\u8bf7\u53ea\u6839\u636e\u7528\u6237\u7684\u53d1\u8a00\u6982\u62ec\u5bf9\u8bdd\u4e3b\u9898\u3002" +
+	"\u6ce8\u610f\uff1a\u8fd9\u4e0d\u662f\u804a\u5929\uff0c\u4e0d\u8981\u56de\u7b54\u3001\u89e3\u51b3\u6216\u56de\u5e94\u7528\u6237\u7684\u95ee\u9898\u4e0e\u8bf7\u6c42\uff0c\u4e5f\u4e0d\u8981\u8f93\u51fa\u6807\u9898\u4ee5\u5916\u7684\u4efb\u4f55\u5185\u5bb9\uff0c\u53ea\u8f93\u51fa\u4f60\u751f\u6210\u7684\u6807\u9898\u672c\u8eab\u3002" +
+	"\u8981\u6c42\uff1a\u4e0d\u8d85\u8fc7 12 \u4e2a\u6c49\u5b57\u6216 20 \u4e2a\u82f1\u6587\u5b57\u7b26\uff1b\u4e0d\u8981\u6807\u70b9\u3001\u5f15\u53f7\u3001\u4e66\u540d\u53f7\u3001\u53e5\u53f7\uff1b\u4e0d\u8981\u89e3\u91ca\uff1b\u4f7f\u7528\u4e0e\u7528\u6237\u76f8\u540c\u7684\u8bed\u8a00\u3002";
 
 export async function generateConversationTitle(input: GenerateTitleInput): Promise<string | undefined> {
 	const userMessage = input.userMessage.trim();
@@ -65,9 +70,15 @@ export async function generateConversationTitle(input: GenerateTitleInput): Prom
 						content: buildTitlePrompt(userMessage, input.assistantMessage),
 					},
 				],
-				max_tokens: 24,
+				max_tokens: TITLE_MAX_TOKENS,
 				temperature: 0,
 				stream: false,
+				// Title generation never uses deep thinking. DeepSeek V4 reasoning models
+				// think by default, which would spend the tiny title budget on hidden
+				// reasoning and return empty content. `thinking: { type: "disabled" }`
+				// matches what the runtime sends for thinking-off (pi-ai openai-completions,
+				// thinkingFormat "deepseek").
+				thinking: { type: "disabled" },
 			}),
 		});
 		const elapsedMs = Date.now() - startedAt;

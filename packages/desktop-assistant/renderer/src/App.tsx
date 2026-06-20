@@ -13,7 +13,14 @@ import {
 	type WindowMode,
 } from "../../src/shared/types.ts";
 import type { AppWarning, Route, StoredConversation } from "./app-types.ts";
-import { loadStoredSettings, loadWindowMode, persistSettings, persistWindowMode } from "./app-storage.ts";
+import {
+	loadStoredSettings,
+	loadWindowAlwaysOnTop,
+	loadWindowMode,
+	persistSettings,
+	persistWindowAlwaysOnTop,
+	persistWindowMode,
+} from "./app-storage.ts";
 import { ChatView } from "./chat/ChatView.tsx";
 import { Drawer } from "./components/Drawer.tsx";
 import { SandboxInitModal } from "./components/SandboxInitModal.tsx";
@@ -25,12 +32,17 @@ import { isCatCommand, runCatCommand } from "./pet/pet-commands.ts";
 import { loadPetConfig, persistPetConfig } from "./pet/pet-storage.ts";
 import type { PetConfig } from "./pet/types.ts";
 import type { VoiceController } from "./voice/voice-controller.ts";
+import { voiceToneOf } from "./voice-ui.ts";
 import "./styles.css";
 
 const WINDOW_MODE = new URLSearchParams(window.location.search).get("window");
+const loadHomeView = () => import("./home/HomeView.tsx").then((module) => ({ default: module.HomeView }));
+const loadMemoView = () => import("./memo/MemoView.tsx").then((module) => ({ default: module.MemoView }));
 const loadSettingsView = () =>
 	import("./settings/SettingsView.tsx").then((module) => ({ default: module.SettingsView }));
 const loadMcpManagerView = () => import("./mcp/McpManagerView.tsx").then((module) => ({ default: module.McpManagerView }));
+const loadToolsetManagerView = () =>
+	import("./toolset/ToolsetManagerView.tsx").then((module) => ({ default: module.ToolsetManagerView }));
 const loadPluginManagerView = () =>
 	import("./plugins/PluginManagerView.tsx").then((module) => ({ default: module.PluginManagerView }));
 const loadPersonalSkillManagerView = () =>
@@ -39,8 +51,11 @@ const loadPersonalSkillManagerView = () =>
 	}));
 const loadSandboxSettingsView = () =>
 	import("./settings/SandboxSettingsView.tsx").then((module) => ({ default: module.SandboxSettingsView }));
+const HomeView = lazy(loadHomeView);
+const MemoView = lazy(loadMemoView);
 const SettingsView = lazy(loadSettingsView);
 const McpManagerView = lazy(loadMcpManagerView);
+const ToolsetManagerView = lazy(loadToolsetManagerView);
 const PluginManagerView = lazy(loadPluginManagerView);
 const PersonalSkillManagerView = lazy(loadPersonalSkillManagerView);
 const SandboxSettingsView = lazy(loadSandboxSettingsView);
@@ -59,6 +74,8 @@ type WindowTransitionPhase = "idle" | "blur-in" | "resizing" | "blur-out";
 
 const WINDOW_BLUR_MS = 120;
 const WINDOW_RESIZE_MS = 460;
+/** Idle delay before a voice conversation clears itself off the home page. */
+const HOME_IDLE_CLEAR_MS = 5000;
 
 function App() {
 	const [liveSnapshot, setLiveSnapshotState] = useState<DesktopAssistantSnapshot | undefined>();
@@ -66,9 +83,12 @@ function App() {
 	const [attachments, setAttachments] = useState<PendingPromptAttachment[]>([]);
 	const [drawerOpen, setDrawerOpen] = useState(false);
 	const [windowMode, setWindowMode] = useState<WindowMode>(() => loadWindowMode());
+	const [windowAlwaysOnTop, setWindowAlwaysOnTop] = useState(() => loadWindowAlwaysOnTop());
 	const [windowTransitionPhase, setWindowTransitionPhase] = useState<WindowTransitionPhase>("idle");
 	const [dockOpen, setDockOpen] = useState(false);
-	const [route, setRoute] = useState<Route>("chat");
+	const [route, setRoute] = useState<Route>("home");
+	// Overlay pages mount on first visit and stay mounted so their slide-out animates.
+	const [mountedRoutes, setMountedRoutes] = useState<Record<string, boolean>>({ home: true });
 	const [conversations, setConversations] = useState<StoredConversation[]>([]);
 	const [resumedConversationSessionId, setResumedConversationSessionId] = useState<string | undefined>();
 	const [loadingConversationSessionId, setLoadingConversationSessionId] = useState<string | undefined>();
@@ -80,6 +100,8 @@ function App() {
 	const [sandboxModalDismissed, setSandboxModalDismissed] = useState(false);
 	const [sandboxModalBusy, setSandboxModalBusy] = useState(false);
 	const petEngineRef = useRef<PetEngine | null>(null);
+	const routeRef = useRef<Route>(route);
+	routeRef.current = route;
 	const settingsAppliedRef = useRef(false);
 	const backgroundStartedRef = useRef(false);
 	const appliedStartupModeRef = useRef(false);
@@ -91,10 +113,11 @@ function App() {
 	const windowTransitionTimersRef = useRef<number[]>([]);
 	const warningTimeoutsRef = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map());
 	const isMcpWindow = WINDOW_MODE === "mcp";
+	const isToolsetWindow = WINDOW_MODE === "toolset";
 	const isPluginWindow = WINDOW_MODE === "plugins";
 	const isPersonalSkillWindow = WINDOW_MODE === "personal-skills";
 	const isSandboxWindow = WINDOW_MODE === "sandbox";
-	const isUtilityWindow = isMcpWindow || isPluginWindow || isPersonalSkillWindow || isSandboxWindow;
+	const isUtilityWindow = isMcpWindow || isToolsetWindow || isPluginWindow || isPersonalSkillWindow || isSandboxWindow;
 	const viewingHistory = resumedConversationSessionId !== undefined && resumedConversationSessionId === liveSnapshot?.sessionId;
 
 	const setLiveSnapshot = (update: LiveSnapshotUpdate): void => {
@@ -120,6 +143,19 @@ function App() {
 	const pushWarning = (message: string) => pushToast({ message });
 
 	useEffect(() => {
+		setMountedRoutes((current) => (current[route] ? current : { ...current, [route]: true }));
+	}, [route]);
+
+	// Remember which base page (home/chat) an overlay was opened from, so "返回" lands there.
+	const returnRouteRef = useRef<Route>("home");
+	const openOverlay = (next: Route) => {
+		if (route === "home" || route === "chat") returnRouteRef.current = route;
+		setRoute(next);
+		setDrawerOpen(false);
+	};
+	const closeOverlay = () => setRoute(returnRouteRef.current);
+
+	useEffect(() => {
 		liveSnapshotRef.current = liveSnapshot;
 		if (liveSnapshot) {
 			voiceControllerRef.current?.updateFromSnapshot(liveSnapshot);
@@ -139,7 +175,8 @@ function App() {
 		if (isUtilityWindow || !liveSnapshot || appliedStartupModeRef.current) return;
 		appliedStartupModeRef.current = true;
 		if (windowMode === "expanded") window.desktopAssistant?.setWindowMode?.("expanded", false);
-	}, [isUtilityWindow, liveSnapshot, windowMode]);
+		window.desktopAssistant?.setWindowAlwaysOnTop?.(windowAlwaysOnTop);
+	}, [isUtilityWindow, liveSnapshot, windowAlwaysOnTop, windowMode]);
 
 	const refreshHistory = async () => {
 		if (!window.desktopAssistant) return;
@@ -162,6 +199,15 @@ function App() {
 			refreshHistory,
 			onWarning: pushWarning,
 			onPartialTranscript: animateVoiceTranscript,
+			// On the home page every voice input (mic or wake word) starts a fresh
+			// conversation and is shown inline — never auto-navigating to chat.
+			onBeforeInput: async () => {
+				if (routeRef.current !== "home" || !window.desktopAssistant) return;
+				const created = await window.desktopAssistant.newConversation();
+				setLiveSnapshot(created);
+				setResumedConversationSessionId(undefined);
+				setLoadingConversationSessionId(undefined);
+			},
 		});
 		return voiceControllerRef.current;
 	};
@@ -228,9 +274,25 @@ function App() {
 				if (event.sessionId && event.sessionId !== liveSnapshotRef.current?.sessionId) return;
 				setLiveSnapshot((current) => (current ? { ...current, streamingText: event.streamingText! } : current));
 			}
+			if (event.type === "streaming_thinking" && event.streamingThinking !== undefined) {
+				if (event.sessionId && event.sessionId !== liveSnapshotRef.current?.sessionId) return;
+				setLiveSnapshot((current) =>
+					current ? { ...current, streamingThinking: event.streamingThinking! } : current,
+				);
+			}
 			if (event.voiceOverlay) {
 				if (!voiceControllerRef.current?.shouldApplyExternalOverlay(event.voiceOverlay)) return;
 				setLiveSnapshot((current) => (current ? { ...current, voiceOverlay: event.voiceOverlay! } : current));
+			}
+			if ((event.type === "memo_changed" || event.type === "memo_reminder") && event.memoSummary) {
+				const memoSummary = event.memoSummary;
+				setLiveSnapshot((current) => (current ? { ...current, memoSummary } : current));
+			}
+			if (event.type === "memo_reminder" && event.memo) {
+				const memo = event.memo;
+				const heading = memo.reminderMissed ? "错过的提醒" : "待办提醒";
+				pushToast({ tone: "awaiting", title: heading, message: memo.title }, 9000);
+				petEngineRef.current?.speak(`⏰ ${memo.title}`);
 			}
 		});
 		return () => {
@@ -468,6 +530,12 @@ function App() {
 		windowTransitionTimersRef.current = [resizeTimer, blurOutTimer, doneTimer];
 	};
 
+	const updateWindowAlwaysOnTop = (enabled: boolean) => {
+		setWindowAlwaysOnTop(enabled);
+		persistWindowAlwaysOnTop(enabled);
+		window.desktopAssistant?.setWindowAlwaysOnTop?.(enabled);
+	};
+
 	const updateSettings = async (settings: Partial<DesktopAssistantSettings>) => {
 		if (!window.desktopAssistant) return undefined;
 		try {
@@ -497,6 +565,11 @@ function App() {
 	const openMcpManager = async () => {
 		if (!window.desktopAssistant) return;
 		await window.desktopAssistant.openMcpManagerWindow();
+	};
+
+	const openToolsetManager = async () => {
+		if (!window.desktopAssistant) return;
+		await window.desktopAssistant.openToolsetManagerWindow();
 	};
 
 	const openPluginManager = async () => {
@@ -597,6 +670,77 @@ function App() {
 			await refreshHistory();
 		});
 	};
+
+	// Home page: submitting a question (with optional attachments) opens a fresh
+	// conversation, then sends it.
+	const submitHomePrompt = async (text: string, homeAttachments: PendingPromptAttachment[] = []) => {
+		const trimmed = text.trim();
+		if ((!trimmed && homeAttachments.length === 0) || !window.desktopAssistant) return;
+		const created = await window.desktopAssistant.newConversation();
+		setLiveSnapshot(created);
+		setResumedConversationSessionId(undefined);
+		setLoadingConversationSessionId(undefined);
+		setRoute("chat");
+		setDrawerOpen(false);
+		const next = await window.desktopAssistant.prompt({
+			message: trimmed,
+			source: "text",
+			attachments: homeAttachments,
+		});
+		setLiveSnapshot(next);
+		await refreshHistory();
+	};
+
+	const completeMemoQuick = async (id: string) => {
+		if (!window.desktopAssistant) return;
+		await window.desktopAssistant.completeMemo({ id, completed: true });
+		// memo_changed event refreshes memoSummary on the snapshot.
+	};
+
+	// Reset the home inline conversation back to a clean landing page by starting a
+	// fresh (empty) conversation. The prior conversation stays in history.
+	const clearHomeConversation = async () => {
+		if (!window.desktopAssistant) return;
+		const created = await window.desktopAssistant.newConversation();
+		setLiveSnapshot(created);
+		setResumedConversationSessionId(undefined);
+		setLoadingConversationSessionId(undefined);
+		await refreshHistory();
+	};
+
+	// On the home page, an idle voice conversation clears itself after 5s so the
+	// landing page returns to a clean state. Any in-app activity (mouse move while
+	// focused, click, key, wheel) or a new voice turn resets the countdown; while the
+	// window is unfocused those events don't fire, so the timer simply runs out.
+	useEffect(() => {
+		if (route !== "home" || !liveSnapshot || liveSnapshot.messages.length === 0 || liveSnapshot.isRunning) {
+			return undefined;
+		}
+		const tone = voiceToneOf(liveSnapshot.voiceOverlay.state);
+		if (tone === "capturing" || tone === "processing" || tone === "speaking") return undefined;
+		let timer: number | undefined;
+		const arm = () => {
+			if (timer !== undefined) window.clearTimeout(timer);
+			timer = window.setTimeout(() => void clearHomeConversation(), HOME_IDLE_CLEAR_MS);
+		};
+		const onMove = () => {
+			if (document.hasFocus()) arm();
+		};
+		const onActivity = () => arm();
+		arm();
+		window.addEventListener("mousemove", onMove);
+		window.addEventListener("mousedown", onActivity);
+		window.addEventListener("keydown", onActivity);
+		window.addEventListener("wheel", onActivity, { passive: true });
+		return () => {
+			if (timer !== undefined) window.clearTimeout(timer);
+			window.removeEventListener("mousemove", onMove);
+			window.removeEventListener("mousedown", onActivity);
+			window.removeEventListener("keydown", onActivity);
+			window.removeEventListener("wheel", onActivity);
+		};
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [route, liveSnapshot?.messages.length, liveSnapshot?.isRunning, liveSnapshot?.voiceOverlay.state]);
 
 	const deleteConversation = async (sessionId: string) => {
 		if (!window.desktopAssistant) return;
@@ -704,6 +848,15 @@ function App() {
 						windowed
 					/>
 				</Suspense>
+			) : isToolsetWindow ? (
+				<Suspense fallback={<StartupFallback label="加载工具集" />}>
+					<ToolsetManagerView
+						snapshot={liveSnapshot}
+						onBack={() => window.desktopAssistant.closeWindow()}
+						onSnapshot={setLiveSnapshot}
+						windowed
+					/>
+				</Suspense>
 			) : isPluginWindow ? (
 				<Suspense fallback={<StartupFallback label="加载插件管理器" />}>
 					<PluginManagerView windowed />
@@ -723,56 +876,105 @@ function App() {
 				</Suspense>
 			) : (
 				<div className="app-main">
-					<div className={`page-stack ${route}`}>
-						<div className="page page-chat">
-							<ChatView
-								snapshot={liveSnapshot}
-								prompt={prompt}
-								attachments={attachments}
-								viewingHistory={viewingHistory}
-								loadingHistory={loadingConversationSessionId !== undefined}
-								loadingEarlierHistory={loadingEarlierHistory}
-								wakeModels={wakeModels}
-								petConfig={petConfig}
-								petEngineRef={petEngineRef}
-								setPrompt={setPrompt}
-								onAddAttachments={addAttachments}
-								onRemoveAttachment={removeAttachment}
-								onToggleConversationThinking={updateConversationThinking}
-								onSend={sendPrompt}
-								onStartVoice={startVoice}
-								onAbort={onAbort}
-								onMenu={() => {
-									setDrawerOpen(true);
-									void refreshHistory();
-								}}
-								windowMode={windowMode}
-								onToggleWindowMode={toggleWindowMode}
-								onLoadEarlierHistory={loadEarlierHistory}
-								onApprove={approveConfirmation}
-								onReject={rejectConfirmation}
-							/>
-						</div>
-						<div className="page page-settings">
-							{route === "settings" ? (
-								<Suspense fallback={<StartupFallback label="加载设置" />}>
-									<SettingsView
-										snapshot={liveSnapshot}
-										onBack={() => setRoute("chat")}
-										onOpenMcp={() => void openMcpManager()}
-										onOpenPlugins={() => void openPluginManager()}
-										onOpenPersonalSkills={() => void openPersonalSkillManager()}
-										onUpdate={updateSettings}
-										onSaveApiKey={saveApiKey}
-										onSaveVoiceApiKey={saveVoiceApiKey}
-										historyCount={conversations.length}
-										wakeModels={wakeModels}
-										onWakeModels={setWakeModels}
-										onClearHistory={clearAllConversations}
-									/>
-								</Suspense>
-							) : null}
-						</div>
+					{/* Chat is the always-mounted base layer; home/memo/settings slide over it. */}
+					<div className="page-base">
+						<ChatView
+							snapshot={liveSnapshot}
+							prompt={prompt}
+							attachments={attachments}
+							viewingHistory={viewingHistory}
+							loadingHistory={loadingConversationSessionId !== undefined}
+							loadingEarlierHistory={loadingEarlierHistory}
+							wakeModels={wakeModels}
+							petConfig={petConfig}
+							petEngineRef={petEngineRef}
+							setPrompt={setPrompt}
+							onAddAttachments={addAttachments}
+							onRemoveAttachment={removeAttachment}
+							onToggleConversationThinking={updateConversationThinking}
+							onSend={sendPrompt}
+							onStartVoice={startVoice}
+							onAbort={onAbort}
+							onMenu={() => {
+								setDrawerOpen(true);
+								void refreshHistory();
+							}}
+							onOpenMemo={() => openOverlay("memo")}
+							windowMode={windowMode}
+							onToggleWindowMode={toggleWindowMode}
+							onLoadEarlierHistory={loadEarlierHistory}
+							onApprove={approveConfirmation}
+							onReject={rejectConfirmation}
+						/>
+					</div>
+
+					<div className={`overlay-page overlay-home ${route === "home" ? "active" : ""}`}>
+						{mountedRoutes.home ? (
+							<Suspense fallback={<StartupFallback label="加载首页" />}>
+								<HomeView
+									snapshot={liveSnapshot}
+									conversations={conversations}
+									onSubmit={submitHomePrompt}
+									onNewChat={startNewChat}
+									onOpenMemo={() => openOverlay("memo")}
+									onOpenSettings={() => openOverlay("settings")}
+									onOpenSession={selectSession}
+									onCompleteMemo={completeMemoQuick}
+									onStartVoice={startVoice}
+									onExpandToChat={() => setRoute("chat")}
+									onMenu={() => {
+										setDrawerOpen(true);
+										void refreshHistory();
+									}}
+									wakeModels={wakeModels}
+									windowMode={windowMode}
+									onToggleWindowMode={toggleWindowMode}
+								/>
+							</Suspense>
+						) : null}
+					</div>
+
+					<div className={`overlay-page overlay-right overlay-memo ${route === "memo" ? "active" : ""}`}>
+						{mountedRoutes.memo ? (
+							<Suspense fallback={<StartupFallback label="加载备忘录" />}>
+								<MemoView
+									snapshot={liveSnapshot}
+									onBack={closeOverlay}
+									onMenu={() => {
+										setDrawerOpen(true);
+										void refreshHistory();
+									}}
+									wakeModels={wakeModels}
+									windowMode={windowMode}
+									onToggleWindowMode={toggleWindowMode}
+									onOpenSession={selectSession}
+								/>
+							</Suspense>
+						) : null}
+					</div>
+
+					<div className={`overlay-page overlay-right overlay-settings ${route === "settings" ? "active" : ""}`}>
+						{mountedRoutes.settings ? (
+							<Suspense fallback={<StartupFallback label="加载设置" />}>
+								<SettingsView
+									snapshot={liveSnapshot}
+									onBack={closeOverlay}
+									onOpenMcp={() => void openMcpManager()}
+									onOpenToolset={() => void openToolsetManager()}
+									onOpenPlugins={() => void openPluginManager()}
+									onOpenPersonalSkills={() => void openPersonalSkillManager()}
+									onUpdate={updateSettings}
+									onSaveApiKey={saveApiKey}
+									onSaveVoiceApiKey={saveVoiceApiKey}
+									historyCount={conversations.length}
+									wakeModels={wakeModels}
+									onWakeModels={setWakeModels}
+									onClearHistory={clearAllConversations}
+									windowAlwaysOnTop={windowAlwaysOnTop}
+									onWindowAlwaysOnTopChange={updateWindowAlwaysOnTop}
+								/>
+							</Suspense>
+						) : null}
 					</div>
 				</div>
 			)}
@@ -785,11 +987,14 @@ function App() {
 					sessions={liveSnapshot.sessions}
 					focusedSessionId={liveSnapshot.focusedSessionId}
 					conversations={conversations}
-					onNewChat={startNewChat}
-					onOpenSettings={() => {
+					activeRoute={route}
+					memoSummary={liveSnapshot.memoSummary}
+					onOpenHome={() => {
 						setDrawerOpen(false);
-						setRoute("settings");
+						setRoute("home");
 					}}
+					onOpenMemo={() => openOverlay("memo")}
+					onOpenSettings={() => openOverlay("settings")}
 					activeId={liveSnapshot.sessionId}
 					loadingId={loadingConversationSessionId}
 					onSelect={selectSession}
@@ -864,6 +1069,7 @@ function createFallbackSnapshot(): DesktopAssistantSnapshot {
 		apiKeyStatus: DEFAULT_API_KEY_STATUS,
 		isRunning: false,
 		streamingText: "",
+		streamingThinking: "",
 		messages: [] satisfies ChatMessageView[],
 		timeline: [] satisfies TimelineItem[],
 		pendingConfirmations: [],

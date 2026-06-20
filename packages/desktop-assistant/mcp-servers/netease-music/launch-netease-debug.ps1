@@ -55,7 +55,8 @@ if (-not (Test-Path -LiteralPath $ExePath)) {
 }
 
 Write-Host "Launching: $ExePath --remote-debugging-port=$Port" -ForegroundColor Cyan
-Start-Process -FilePath $ExePath -ArgumentList "--remote-debugging-port=$Port"
+$workingDirectory = Split-Path -Parent $ExePath
+Start-Process -FilePath $ExePath -WorkingDirectory $workingDirectory -ArgumentList "--remote-debugging-port=$Port"
 
 for ($i = 0; $i -lt 25; $i++) {
   Start-Sleep -Milliseconds 1000
