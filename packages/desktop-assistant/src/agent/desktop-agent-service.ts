@@ -246,6 +246,8 @@ export class DesktopAgentService {
 	private sessions = new Map<string, ConversationContext>();
 	/** Internal key of the conversation whose detail the UI is currently showing. */
 	private focusedKey = "";
+	/** Guards the one-time empty-conversation prune on first initialize(). */
+	private startupPruneDone = false;
 	/** Max conversations kept live in memory before idle ones are evicted to disk. */
 	private static readonly MAX_LIVE_SESSIONS = 6;
 
@@ -680,7 +682,32 @@ export class DesktopAgentService {
 		}
 		await this.mcpManager.applySettings(this.settings.mcp);
 		await this.context.initializeRuntime();
+		// One-time GC of empty conversation husks left on disk by earlier runs.
+		if (!this.startupPruneDone) {
+			this.startupPruneDone = true;
+			await this.pruneAbandonedEmptyConversations();
+		}
 		this.emit({ type: "snapshot", snapshot: this.snapshot() });
+	}
+
+	/**
+	 * Delete archived conversations that never received a user/assistant message and
+	 * are not currently live. Empty husks (e.g. from rapid new-conversation churn on
+	 * the home page) otherwise pile up on disk and slow every history listing.
+	 */
+	private async pruneAbandonedEmptyConversations(): Promise<void> {
+		try {
+			const summaries = await this.coordinator.listConversationSummaries();
+			for (const summary of summaries) {
+				if (this.findContextEntry(summary.sessionId)) continue; // live — keep
+				if (this.buildHistoryEntry(summary)) continue; // has real content — keep
+				const metadata = this.coordinator.getConversationMetadata(summary.sessionId);
+				this.coordinator.deleteConversationArchive(summary.sessionId);
+				this.coordinator.deleteSessionFile(metadata?.sessionFile);
+			}
+		} catch (error) {
+			console.warn("Failed to prune empty conversations:", error);
+		}
 	}
 
 	async prompt(

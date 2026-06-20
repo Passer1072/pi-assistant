@@ -203,6 +203,9 @@ function App() {
 			// conversation and is shown inline — never auto-navigating to chat.
 			onBeforeInput: async () => {
 				if (routeRef.current !== "home" || !window.desktopAssistant) return;
+				// Reuse the current conversation if it's already empty instead of
+				// spawning another one — avoids leaving empty husks behind.
+				if ((liveSnapshotRef.current?.messages.length ?? 0) === 0) return;
 				const created = await window.desktopAssistant.newConversation();
 				setLiveSnapshot(created);
 				setResumedConversationSessionId(undefined);
@@ -464,6 +467,9 @@ function App() {
 	// fresh (empty) conversation. The prior conversation stays in history.
 	const clearHomeConversation = async () => {
 		if (!window.desktopAssistant) return;
+		// Already on an empty conversation — nothing to clear, and creating another
+		// would only leave an empty husk behind.
+		if ((liveSnapshotRef.current?.messages.length ?? 0) === 0) return;
 		const created = await window.desktopAssistant.newConversation();
 		setLiveSnapshot(created);
 		setResumedConversationSessionId(undefined);
