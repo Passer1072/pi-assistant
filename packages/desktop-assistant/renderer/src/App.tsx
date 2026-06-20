@@ -745,14 +745,24 @@ function App() {
 
 	const deleteConversation = async (sessionId: string) => {
 		if (!window.desktopAssistant) return;
-		const result = await window.desktopAssistant.deleteConversation({ sessionId });
+		// Optimistic: drop it from the list immediately so the click feels instant.
+		// The backend delete (archive teardown + disk removal, occasionally slow on
+		// Windows) and the history refresh reconcile in the background; if the delete
+		// fails, refreshHistory restores the item.
+		setConversations((current) => current.filter((conversation) => conversation.sessionId !== sessionId));
 		if (sessionId === resumedConversationSessionId) {
 			setResumedConversationSessionId(undefined);
 		}
-		if (result.activeSessionId !== liveSnapshot.sessionId) {
-			setLiveSnapshot(await window.desktopAssistant.getSnapshot());
+		try {
+			const result = await window.desktopAssistant.deleteConversation({ sessionId });
+			if (result.activeSessionId !== liveSnapshotRef.current?.sessionId) {
+				setLiveSnapshot(await window.desktopAssistant.getSnapshot());
+			}
+		} catch (error) {
+			console.warn("Failed to delete conversation:", error);
+		} finally {
+			await refreshHistory();
 		}
-		await refreshHistory();
 	};
 
 	const clearAllConversations = async () => {
