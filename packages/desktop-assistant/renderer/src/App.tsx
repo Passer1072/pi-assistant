@@ -89,6 +89,9 @@ function App() {
 	const [route, setRoute] = useState<Route>("home");
 	// Overlay pages mount on first visit and stay mounted so their slide-out animates.
 	const [mountedRoutes, setMountedRoutes] = useState<Record<string, boolean>>({ home: true });
+	// The conversation home "owns" and shows inline — only ones started by home voice.
+	// A resumed history conversation must NOT surface on the home page.
+	const [homeConversationSessionId, setHomeConversationSessionId] = useState<string | undefined>(undefined);
 	const [conversations, setConversations] = useState<StoredConversation[]>([]);
 	const [resumedConversationSessionId, setResumedConversationSessionId] = useState<string | undefined>();
 	const [loadingConversationSessionId, setLoadingConversationSessionId] = useState<string | undefined>();
@@ -205,11 +208,15 @@ function App() {
 				if (routeRef.current !== "home" || !window.desktopAssistant) return;
 				// Reuse the current conversation if it's already empty instead of
 				// spawning another one — avoids leaving empty husks behind.
-				if ((liveSnapshotRef.current?.messages.length ?? 0) === 0) return;
+				if ((liveSnapshotRef.current?.messages.length ?? 0) === 0) {
+					setHomeConversationSessionId(liveSnapshotRef.current?.sessionId);
+					return;
+				}
 				const created = await window.desktopAssistant.newConversation();
 				setLiveSnapshot(created);
 				setResumedConversationSessionId(undefined);
 				setLoadingConversationSessionId(undefined);
+				setHomeConversationSessionId(created.sessionId);
 			},
 		});
 		return voiceControllerRef.current;
@@ -474,6 +481,8 @@ function App() {
 		setLiveSnapshot(created);
 		setResumedConversationSessionId(undefined);
 		setLoadingConversationSessionId(undefined);
+		// The fresh empty conversation remains the home-owned one (ready for next voice).
+		setHomeConversationSessionId(created.sessionId);
 		await refreshHistory();
 	};
 
@@ -486,6 +495,8 @@ function App() {
 		if (route !== "home" || !liveSnapshot || liveSnapshot.messages.length === 0 || liveSnapshot.isRunning) {
 			return undefined;
 		}
+		// Only auto-clear the home-owned (voice) conversation, never a focused history one.
+		if (liveSnapshot.sessionId !== homeConversationSessionId) return undefined;
 		const tone = voiceToneOf(liveSnapshot.voiceOverlay.state);
 		if (tone === "capturing" || tone === "processing" || tone === "speaking") return undefined;
 		let timer: number | undefined;
@@ -510,7 +521,14 @@ function App() {
 			window.removeEventListener("wheel", onActivity);
 		};
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [route, liveSnapshot?.messages.length, liveSnapshot?.isRunning, liveSnapshot?.voiceOverlay.state]);
+	}, [
+		route,
+		homeConversationSessionId,
+		liveSnapshot?.sessionId,
+		liveSnapshot?.messages.length,
+		liveSnapshot?.isRunning,
+		liveSnapshot?.voiceOverlay.state,
+	]);
 
 	if (!liveSnapshot) {
 		return <StartupSplash phase={startupPhase} />;
@@ -713,6 +731,7 @@ function App() {
 
 	const startNewChat = () => {
 		if (!window.desktopAssistant) return;
+		setHomeConversationSessionId(undefined);
 		void window.desktopAssistant.newConversation().then(async (next) => {
 			setLiveSnapshot(next);
 			setResumedConversationSessionId(undefined);
@@ -728,6 +747,8 @@ function App() {
 	const submitHomePrompt = async (text: string, homeAttachments: PendingPromptAttachment[] = []) => {
 		const trimmed = text.trim();
 		if ((!trimmed && homeAttachments.length === 0) || !window.desktopAssistant) return;
+		// Text send jumps to chat — it's a real chat conversation, not a home one.
+		setHomeConversationSessionId(undefined);
 		const created = await window.desktopAssistant.newConversation();
 		setLiveSnapshot(created);
 		setResumedConversationSessionId(undefined);
@@ -783,6 +804,9 @@ function App() {
 	// with no teardown; archived-only sessions are rebuilt from disk via resume.
 	const selectSession = (id: string) => {
 		if (!window.desktopAssistant) return;
+		// Opening a session from the list is an explicit chat navigation — it must not
+		// be treated as a home conversation, so home stays clean when returning to it.
+		setHomeConversationSessionId(undefined);
 		setDrawerOpen(false);
 		setRoute("chat");
 		const isLive = liveSnapshotRef.current?.sessions.some((session) => session.sessionId === id);
@@ -905,6 +929,7 @@ function App() {
 							wakeModels={wakeModels}
 							petConfig={petConfig}
 							petEngineRef={petEngineRef}
+							petLayerActive={route !== "home"}
 							setPrompt={setPrompt}
 							onAddAttachments={addAttachments}
 							onRemoveAttachment={removeAttachment}
@@ -930,6 +955,7 @@ function App() {
 							<Suspense fallback={<StartupFallback label="加载首页" />}>
 								<HomeView
 									snapshot={liveSnapshot}
+									homeConversationActive={liveSnapshot.sessionId === homeConversationSessionId}
 									conversations={conversations}
 									onSubmit={submitHomePrompt}
 									onNewChat={startNewChat}
@@ -938,7 +964,12 @@ function App() {
 									onOpenSession={selectSession}
 									onCompleteMemo={completeMemoQuick}
 									onStartVoice={startVoice}
-									onExpandToChat={() => setRoute("chat")}
+									onExpandToChat={() => {
+										// Promote the inline thread to a full chat conversation; it's no
+										// longer "owned" by home, so home stays clean when revisited.
+										setHomeConversationSessionId(undefined);
+										setRoute("chat");
+									}}
 									onMenu={() => {
 										setDrawerOpen(true);
 										void refreshHistory();
@@ -946,6 +977,9 @@ function App() {
 									wakeModels={wakeModels}
 									windowMode={windowMode}
 									onToggleWindowMode={toggleWindowMode}
+									petConfig={petConfig}
+									petEngineRef={petEngineRef}
+									petLayerActive={route === "home"}
 								/>
 							</Suspense>
 						) : null}

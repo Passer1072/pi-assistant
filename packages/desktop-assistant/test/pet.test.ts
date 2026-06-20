@@ -17,7 +17,7 @@ import {
 	shouldStopHorizontalMotion,
 	standingSurface,
 } from "../renderer/src/pet/engine/physics.ts";
-import type { Terrain } from "../renderer/src/pet/engine/terrain.ts";
+import { scanTerrain, type Terrain } from "../renderer/src/pet/engine/terrain.ts";
 import { isCatCommand, runCatCommand } from "../renderer/src/pet/pet-commands.ts";
 import { loadPetConfig, PET_STORAGE_KEY, persistPetConfig } from "../renderer/src/pet/pet-storage.ts";
 import { CAT } from "../renderer/src/pet/pets/cat.ts";
@@ -53,6 +53,40 @@ function createEngineForPhysics(): PetEngine {
 		getBoundingClientRect: () => ({ width: 320, height: 260 }),
 	} as unknown as HTMLElement;
 	return new PetEngine(canvas, sprite, chatScreen, DEFAULT_PET_CONFIG, undefined, () => 0.5);
+}
+
+function rect(left: number, top: number, width: number, height: number): DOMRect {
+	return {
+		x: left,
+		y: top,
+		left,
+		top,
+		width,
+		height,
+		right: left + width,
+		bottom: top + height,
+		toJSON: () => ({}),
+	} as DOMRect;
+}
+
+function elementWithRect(bounds: DOMRect): HTMLElement {
+	return {
+		getBoundingClientRect: () => bounds,
+	} as HTMLElement;
+}
+
+function terrainHost(bounds: DOMRect, nodes: Record<string, HTMLElement | HTMLElement[]>): HTMLElement {
+	return {
+		getBoundingClientRect: () => bounds,
+		querySelector: <T extends Element>(selector: string): T | null => {
+			const node = nodes[selector];
+			return (Array.isArray(node) ? node[0] : (node ?? null)) as unknown as T | null;
+		},
+		querySelectorAll: <T extends Element>(selector: string): T[] => {
+			const node = nodes[selector];
+			return (Array.isArray(node) ? node : node ? [node] : []) as unknown as T[];
+		},
+	} as unknown as HTMLElement;
 }
 
 class FakeImage {
@@ -120,6 +154,30 @@ describe("pet physics", () => {
 		expect(v).toBeDefined();
 		expect(v!.y).toBeLessThan(0);
 		expect(Number.isFinite(v!.x)).toBe(true);
+	});
+});
+
+describe("pet terrain scanning", () => {
+	it("can scan home page terrain with custom selectors", () => {
+		const host = terrainHost(rect(100, 50, 520, 640), {
+			".home-live": elementWithRect(rect(120, 100, 480, 420)),
+			".home-composer": elementWithRect(rect(140, 560, 440, 60)),
+			".home-convo .bubble": [elementWithRect(rect(180, 420, 180, 42)), elementWithRect(rect(180, 90, 180, 42))],
+		});
+
+		const terrain = scanTerrain(host, {
+			thread: ".home-live",
+			composer: ".home-composer",
+			bubble: ".home-convo .bubble",
+		});
+
+		expect(terrain?.homeTop).toBe(510);
+		expect(terrain?.homeX).toBe(260);
+		expect(terrain?.bounds).toEqual({ left: 26, right: 494, top: 56, bottom: 510 });
+		expect(terrain?.platforms).toEqual([
+			{ id: "composer", kind: "composer", left: 26, right: 494, top: 510 },
+			{ id: "bubble-0", kind: "bubble", left: 80, right: 260, top: 370 },
+		]);
 	});
 });
 

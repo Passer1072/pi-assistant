@@ -30,7 +30,7 @@ import {
 	shouldStopHorizontalMotion,
 	standingSurface,
 } from "./physics.ts";
-import { scanTerrain, type Terrain } from "./terrain.ts";
+import { scanTerrain, type Terrain, type TerrainSelectors } from "./terrain.ts";
 import ballSrc from "../assets/tennis.png";
 
 const TERRAIN_REFRESH_MS = 140;
@@ -106,7 +106,8 @@ export class PetEngine {
 	private readonly ctx: CanvasRenderingContext2D;
 	private readonly canvas: HTMLCanvasElement;
 	private readonly spriteEl: HTMLElement;
-	private readonly chatScreen: HTMLElement;
+	private readonly host: HTMLElement;
+	private readonly terrainSelectors?: TerrainSelectors;
 	private readonly speechEl?: HTMLElement;
 	private readonly rng: () => number;
 	private mood: Mood = createMood();
@@ -163,14 +164,16 @@ export class PetEngine {
 	constructor(
 		canvas: HTMLCanvasElement,
 		spriteEl: HTMLElement,
-		chatScreen: HTMLElement,
+		host: HTMLElement,
 		config: PetConfig,
 		speechEl?: HTMLElement,
 		rng: () => number = Math.random,
+		terrainSelectors?: TerrainSelectors,
 	) {
 		this.canvas = canvas;
 		this.spriteEl = spriteEl;
-		this.chatScreen = chatScreen;
+		this.host = host;
+		this.terrainSelectors = terrainSelectors;
 		this.speechEl = speechEl;
 		this.rng = rng;
 		const ctx = canvas.getContext("2d");
@@ -200,7 +203,7 @@ export class PetEngine {
 	}
 
 	resize(): void {
-		const rect = this.chatScreen.getBoundingClientRect();
+		const rect = this.host.getBoundingClientRect();
 		const dpr = window.devicePixelRatio || 1;
 		this.cssWidth = rect.width;
 		this.cssHeight = rect.height;
@@ -423,7 +426,7 @@ export class PetEngine {
 
 	private update(dt: number, now: number): void {
 		if (now - this.lastTerrainScan > TERRAIN_REFRESH_MS) {
-			this.terrain = scanTerrain(this.chatScreen);
+			this.terrain = scanTerrain(this.host, this.terrainSelectors);
 			this.lastTerrainScan = now;
 		}
 		const terrain = this.terrain;

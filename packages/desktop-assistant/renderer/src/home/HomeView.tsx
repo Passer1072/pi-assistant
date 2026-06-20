@@ -23,6 +23,8 @@ import { attachmentsFromFiles, attachmentsFromText, formatAttachmentSize } from 
 import { ConversationThread } from "../chat/ConversationThread.tsx";
 import { TitleBar } from "../components/TitleBar.tsx";
 import { formatDueLabel } from "../memo/memo-view-model.ts";
+import { PetLayer, type PetLayerHandle } from "../pet/PetLayer.tsx";
+import type { PetConfig } from "../pet/types.ts";
 import { voiceToneOf } from "../voice-ui.ts";
 
 const SUGGESTIONS = [
@@ -34,6 +36,8 @@ const SUGGESTIONS = [
 
 interface HomeViewProps {
 	snapshot: DesktopAssistantSnapshot;
+	/** True only when the focused conversation is one home started via voice. */
+	homeConversationActive: boolean;
 	conversations: StoredConversation[];
 	onSubmit: (text: string, attachments: PendingPromptAttachment[]) => void;
 	onNewChat: () => void;
@@ -47,6 +51,9 @@ interface HomeViewProps {
 	wakeModels: WakeWordModelMetadata[];
 	windowMode: WindowMode;
 	onToggleWindowMode: () => void;
+	petConfig: PetConfig;
+	petEngineRef: PetLayerHandle;
+	petLayerActive: boolean;
 }
 
 function greeting(date: Date): string {
@@ -99,6 +106,7 @@ function voiceComposerClass(state: DesktopAssistantSnapshot["voiceOverlay"]["sta
 
 export function HomeView({
 	snapshot,
+	homeConversationActive,
 	conversations,
 	onSubmit,
 	onNewChat,
@@ -112,6 +120,9 @@ export function HomeView({
 	wakeModels,
 	windowMode,
 	onToggleWindowMode,
+	petConfig,
+	petEngineRef,
+	petLayerActive,
 }: HomeViewProps) {
 	const [text, setText] = useState("");
 	const [attachments, setAttachments] = useState<PendingPromptAttachment[]>([]);
@@ -125,9 +136,9 @@ export function HomeView({
 		[summary],
 	);
 	const recent = conversations[0];
-	// The active conversation is shown inline (voice/wake input lands here). Text send
-	// jumps straight to chat, so this only lights up for voice or a resumed session.
-	const hasConvo = snapshot.messages.length > 0;
+	// Only the home-owned (voice/wake) conversation is shown inline. A resumed history
+	// conversation is focused but NOT home-owned, so it never surfaces here.
+	const hasConvo = homeConversationActive && snapshot.messages.length > 0;
 
 	const topRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
@@ -150,6 +161,12 @@ export function HomeView({
 		const el = scrollRef.current;
 		if (el) el.scrollTop = el.scrollHeight;
 	}, [hasConvo, snapshot.messages.length, snapshot.streamingText]);
+
+	// Once the inline thread is gone (expanded to chat, cleared, or a history session
+	// took focus), drop the expanding state so the launcher is never left covered.
+	useEffect(() => {
+		if (!hasConvo) setExpanding(false);
+	}, [hasConvo]);
 
 	const addAttachments = (incoming: PendingPromptAttachment[]) => {
 		if (incoming.length === 0) return;
@@ -391,6 +408,19 @@ export function HomeView({
 					</div>
 				</div>
 			</div>
+			{petConfig.enabled && petLayerActive ? (
+				<PetLayer
+					config={petConfig}
+					engineRef={petEngineRef}
+					messageCount={snapshot.messages.length}
+					hostSelector=".home-screen"
+					terrainSelectors={{
+						thread: ".home-live",
+						composer: ".home-composer",
+						bubble: ".home-convo .bubble",
+					}}
+				/>
+			) : null}
 		</div>
 	);
 }

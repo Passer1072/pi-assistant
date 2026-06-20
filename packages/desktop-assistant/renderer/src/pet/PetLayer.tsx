@@ -5,6 +5,7 @@
 
 import { useEffect, useRef } from "react";
 import { PetEngine } from "./engine/PetEngine.ts";
+import type { TerrainSelectors } from "./engine/terrain.ts";
 import type { PetConfig, Vec2 } from "./types.ts";
 import "./pets/cat.ts"; // registers the cat species
 import "./pets/fox.ts"; // registers the fox species
@@ -17,10 +18,14 @@ export function PetLayer({
 	config,
 	engineRef,
 	messageCount,
+	hostSelector = ".chat-screen",
+	terrainSelectors,
 }: {
 	config: PetConfig;
 	engineRef?: PetLayerHandle;
 	messageCount: number;
+	hostSelector?: string;
+	terrainSelectors?: TerrainSelectors;
 }) {
 	const rootRef = useRef<HTMLDivElement>(null);
 	const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -33,12 +38,12 @@ export function PetLayer({
 		const root = rootRef.current;
 		const canvas = canvasRef.current;
 		const sprite = spriteRef.current;
-		const chatScreen = root?.closest<HTMLElement>(".chat-screen");
-		if (!root || !canvas || !sprite || !chatScreen) return undefined;
+		const host = root?.closest<HTMLElement>(hostSelector);
+		if (!root || !canvas || !sprite || !host) return undefined;
 
 		let engine: PetEngine;
 		try {
-			engine = new PetEngine(canvas, sprite, chatScreen, config, speechRef.current ?? undefined);
+			engine = new PetEngine(canvas, sprite, host, config, speechRef.current ?? undefined, undefined, terrainSelectors);
 		} catch (error) {
 			console.warn("PetEngine failed to start:", error);
 			return undefined;
@@ -48,7 +53,7 @@ export function PetLayer({
 		if (engineRef) engineRef.current = engine;
 
 		const toLocal = (e: PointerEvent): { local: Vec2; inside: boolean } => {
-			const rect = chatScreen.getBoundingClientRect();
+			const rect = host.getBoundingClientRect();
 			const local = { x: e.clientX - rect.left, y: e.clientY - rect.top };
 			const inside = local.x >= 0 && local.x <= rect.width && local.y >= 0 && local.y <= rect.height;
 			return { local, inside };
@@ -82,7 +87,7 @@ export function PetLayer({
 		document.addEventListener("pointerleave", onLeave);
 
 		const resizeObserver = new ResizeObserver(() => engine.resize());
-		resizeObserver.observe(chatScreen);
+		resizeObserver.observe(host);
 
 		return () => {
 			window.removeEventListener("pointermove", onMove);

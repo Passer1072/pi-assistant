@@ -14,14 +14,25 @@ export interface Terrain {
 	homeX: number;
 }
 
+export interface TerrainSelectors {
+	thread: string;
+	composer: string;
+	bubble: string;
+}
+
 // Only the top slice of a bubble is "standable", and we ignore slivers.
 const MIN_PLATFORM_WIDTH = 40;
 const VIEW_MARGIN = 6;
+const DEFAULT_TERRAIN_SELECTORS: TerrainSelectors = {
+	thread: ".thread",
+	composer: ".composer",
+	bubble: ".thread .bubble",
+};
 
-export function scanTerrain(chatScreen: HTMLElement): Terrain | undefined {
-	const cs = chatScreen.getBoundingClientRect();
-	const thread = chatScreen.querySelector<HTMLElement>(".thread");
-	const composer = chatScreen.querySelector<HTMLElement>(".composer");
+export function scanTerrain(host: HTMLElement, selectors: TerrainSelectors = DEFAULT_TERRAIN_SELECTORS): Terrain | undefined {
+	const cs = host.getBoundingClientRect();
+	const thread = host.querySelector<HTMLElement>(selectors.thread);
+	const composer = host.querySelector<HTMLElement>(selectors.composer);
 	if (!thread || !composer) return undefined;
 
 	const threadRect = thread.getBoundingClientRect();
@@ -48,7 +59,7 @@ export function scanTerrain(chatScreen: HTMLElement): Terrain | undefined {
 
 	const visibleTop = threadRect.top;
 	const visibleBottom = composerRect.top;
-	const bubbles = chatScreen.querySelectorAll<HTMLElement>(".thread .bubble");
+	const bubbles = host.querySelectorAll<HTMLElement>(selectors.bubble);
 	let i = 0;
 	for (const bubble of Array.from(bubbles)) {
 		const r = bubble.getBoundingClientRect();

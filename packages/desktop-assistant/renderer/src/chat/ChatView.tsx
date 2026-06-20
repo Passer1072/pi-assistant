@@ -495,6 +495,7 @@ export function ChatView({
 	wakeModels,
 	petConfig,
 	petEngineRef,
+	petLayerActive,
 	setPrompt,
 	onAddAttachments,
 	onRemoveAttachment,
@@ -519,6 +520,7 @@ export function ChatView({
 	wakeModels: WakeWordModelMetadata[];
 	petConfig: PetConfig;
 	petEngineRef: PetLayerHandle;
+	petLayerActive: boolean;
 	setPrompt: (p: string) => void;
 	onAddAttachments: (attachments: PendingPromptAttachment[]) => void;
 	onRemoveAttachment: (id: string) => void;
@@ -1010,7 +1012,7 @@ export function ChatView({
 					</button>
 				</div>
 			</form>
-			{petConfig.enabled ? (
+			{petConfig.enabled && petLayerActive ? (
 				<PetLayer config={petConfig} engineRef={petEngineRef} messageCount={snapshot.messages.length} />
 			) : null}
 		</div>
