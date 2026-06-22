@@ -1,7 +1,19 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
-import { canonicalize } from "../desktop/sandbox/sandbox-workspace.ts";
+import { expandEnv } from "../desktop/sandbox/sandbox-workspace.ts";
 import type { FileArtifact } from "../shared/types.ts";
+
+/**
+ * Resolve a candidate path to a native absolute path for disk checks. Unlike the sandbox's
+ * canonicalize (which is Windows-semantic and forces backslashes for containment matching), this
+ * uses the platform's own path module, so it works on the Linux CI as well as on Windows.
+ */
+function resolveCandidatePath(input: string, baseDir: string): string {
+	const expanded = expandEnv(input.trim());
+	if (!expanded) return "";
+	const abs = path.isAbsolute(expanded) ? expanded : path.resolve(baseDir, expanded);
+	return path.normalize(abs);
+}
 
 /**
  * Output-file detection for the conversation timeline.
@@ -154,7 +166,7 @@ export function resolveArtifacts(
 		if (out.length >= limit) break;
 		let abs: string;
 		try {
-			abs = canonicalize(candidate.path, baseDir, { realpath: false });
+			abs = resolveCandidatePath(candidate.path, baseDir);
 		} catch {
 			continue;
 		}

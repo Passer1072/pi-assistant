@@ -10,7 +10,11 @@ import {
 
 const ROOT = "C:\\Users\\me\\AppData\\Roaming\\app\\sandbox";
 
-describe("canonicalize", () => {
+// canonicalize and the path tokens are Windows-semantic (drive letters, backslash separators); the
+// assistant only ships on Windows. These assert exact Windows paths, so they only run on win32.
+const WINDOWS_ONLY = process.platform !== "win32";
+
+describe.skipIf(WINDOWS_ONLY)("canonicalize", () => {
 	it("makes paths absolute, normalizes separators, and lowercases the drive", () => {
 		expect(canonicalize("foo/bar", ROOT, { realpath: false })).toBe(
 			`${ROOT.toLowerCase()[0]}${ROOT.slice(1)}\\foo\\bar`,
@@ -41,7 +45,7 @@ describe("isWithin / isWithinAny", () => {
 	});
 });
 
-describe("path tokens", () => {
+describe.skipIf(WINDOWS_ONLY)("path tokens", () => {
 	const ctx = buildSandboxPathContext({
 		sandboxRoot: "C:\\sb",
 		documents: "C:\\Users\\me\\Documents",

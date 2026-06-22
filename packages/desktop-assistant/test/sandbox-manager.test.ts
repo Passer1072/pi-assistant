@@ -73,7 +73,8 @@ describe("SandboxManager quota / cleanup", () => {
 	});
 });
 
-describe("SandboxManager import / export", () => {
+// import/export resolves real disk paths through the Windows-semantic canonicalize; only on win32.
+describe.skipIf(process.platform !== "win32")("SandboxManager import / export", () => {
 	it("imports a real file into the sandbox and exports one back out", async () => {
 		const manager = makeManager();
 		await manager.init();
