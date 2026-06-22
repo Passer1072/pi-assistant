@@ -81,6 +81,8 @@ import type {
 	MemoListRequest,
 	MemoListResponse,
 	MemoSetReminderRequest,
+	FileActionResponse,
+	FilePathRequest,
 	MemoSnoozeRequest,
 	MemoUpdateRequest,
 	OpenBuiltInBrowserRequest,
@@ -225,6 +227,9 @@ interface DesktopAssistantApi {
 	deleteAppLaunchCacheEntry(request: DeleteAppLaunchCacheEntryRequest): Promise<AppLaunchCacheView>;
 	openAppLaunchCacheWindow(): Promise<void>;
 	openUrlInDefaultBrowser(request: OpenUrlInDefaultBrowserRequest): Promise<unknown>;
+	openPath(request: FilePathRequest): Promise<FileActionResponse>;
+	showItemInFolder(request: FilePathRequest): Promise<FileActionResponse>;
+	copyFileToClipboard(request: FilePathRequest): Promise<FileActionResponse>;
 	openBuiltInBrowser(request?: OpenBuiltInBrowserRequest): Promise<BuiltInBrowserStatus>;
 	getBuiltInBrowserStatus(): Promise<BuiltInBrowserStatus>;
 	builtInBrowserNavigate(request: BrowserNavigateRequest): Promise<BuiltInBrowserStatus>;
