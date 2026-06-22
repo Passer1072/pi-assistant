@@ -419,7 +419,8 @@ export function buildBrowserRoutingAppendPrompt(defaultBrowser: BrowserTarget): 
 	return [
 		"<browser_routing_policy>",
 		`The user's default browser is ${defaultBrowser}.`,
-		"Use browser_* tools for AI browser actions, opening webpages, reading webpages, and browser automation.",
+		"For ANY task involving a website, web page, URL, opening/reading/searching web content in a browser, or browser automation, you MUST use the browser_* tools (e.g. browser_open_url). They are the only correct way to open web content.",
+		"NEVER use open_app, app_interaction, shell commands, or keyboard/mouse automation to launch a web browser (Chrome, Edge, Firefox, etc.) or to open a URL. Those bypass the user's default browser and are wrong. open_app is only for non-browser desktop applications.",
 		"Omit the browser parameter so the browser_* tools use the user's default browser.",
 		"Only pass browser when the user explicitly says to use Chrome, Edge, or the built-in browser for this operation.",
 		"Do not casually switch browsers. If the default browser is unavailable or lacks a required capability, say so and choose the smallest clear fallback.",

@@ -52,6 +52,13 @@ export interface DesktopToolOptions {
 	sandbox?: () => SandboxSettings;
 	/** Live sandbox manager (lifecycle, workspace, import/export). Absent → legacy behaviour. */
 	sandboxManager?: SandboxManager;
+	/**
+	 * Route a browser/URL launch to the user's configured default (assistant) browser instead of
+	 * the OS-default browser. Provided when AI browser control is enabled. open_app uses it so that
+	 * "open a website" / "open chrome" go through the default browser (built-in/Chrome/Edge with the
+	 * assistant's dedicated profile) rather than launching the user's native OS browser.
+	 */
+	openInDefaultBrowser?: (url?: string) => Promise<{ stdout: string; stderr: string }>;
 }
 
 /** Build the sandbox view a tool needs to gate one action. Falls back to a disabled sandbox. */
@@ -132,6 +139,7 @@ const SYSTEM_OPERATION_GUIDELINES = [
 	"For music players (网易云音乐/NetEase Cloud Music, QQ音乐, Spotify, etc.): if a music-control MCP plugin tool (name starts with mcp_, e.g. mcp_ncm_*) is available, you MUST use it for search/play/点歌/歌单/红心 instead of opening the app or pressing keys. Only when no such plugin exists, use app_interaction for the app workflow, then media_control, then keyboard_mouse as the last resort.",
 	"Use media_control for generic system media keys (play, pause, next, previous) when no app-specific control plugin is available. Do not rely on keyboard_mouse alone for media playback tasks.",
 	"After GUI or media actions, verify state with desktop_observe, get_screen_context, or the structured tool result before claiming completion.",
+	"打开网页 / 网址 / 浏览器：必须使用 browser_* 工具（如 browser_open_url），它会走用户设置的默认浏览器。绝不要用 open_app、命令或键鼠自动化去启动 Chrome/Edge/Firefox 或打开网址——那会绕开默认浏览器。open_app 只用于非浏览器应用。",
 	"打开应用：open_app 若返回「已在运行」或「进程已在运行/窗口加载中」，即视为已成功——绝不要再次 open_app 或 find_app 重开（会开出多个实例）。需要确认窗口出现，就用 desktop_observe 稍等观察，而不是重复启动。",
 	"控制类 MCP（如 mcp_ncm_*）若返回「目标软件正在启动中，请稍后重试」之类的提示：说明它已自动启动目标软件，应当等待约 5~10 秒后【重试同一个 MCP 工具一次】即可，不要反复重试、也不要因此改用桌面自动化/键盘去操作。",
 	"Use shell_command_safe for low-risk Windows system operations that are not covered by a dedicated tool, while respecting confirmation gates for risky actions.",
@@ -614,6 +622,42 @@ async function findRunningApp(options: DesktopToolOptions, nameBase: string): Pr
 	}
 }
 
+/** App names that mean "a web browser" — launching these should go through the default browser. */
+const BROWSER_LAUNCH_NAMES = new Set([
+	"chrome",
+	"google chrome",
+	"googlechrome",
+	"chrome.exe",
+	"谷歌",
+	"谷歌浏览器",
+	"edge",
+	"msedge",
+	"msedge.exe",
+	"microsoft edge",
+	"微软edge",
+	"微软浏览器",
+	"firefox",
+	"火狐",
+	"火狐浏览器",
+	"browser",
+	"web browser",
+	"浏览器",
+	"网页浏览器",
+	"default browser",
+	"默认浏览器",
+]);
+
+/**
+ * When open_app is asked to launch a browser or open a URL, return the URL to hand to the default
+ * browser (undefined url = open the default browser itself). Returns null for non-browser apps.
+ */
+function browserLaunchRedirect(app: string): { url?: string } | null {
+	const trimmed = app.trim();
+	if (/^https?:\/\//i.test(trimmed)) return { url: trimmed };
+	if (BROWSER_LAUNCH_NAMES.has(trimmed.toLowerCase())) return {};
+	return null;
+}
+
 function createOpenAppTool(options: DesktopToolOptions): ToolDefinition {
 	return defineTool({
 		name: "open_app",
@@ -636,6 +680,12 @@ function createOpenAppTool(options: DesktopToolOptions): ToolDefinition {
 				async () => {
 					const cachePath = options.appLaunchCachePath;
 					const requestedApp = params.app.trim();
+					// Route browser / URL launches through the user's default browser instead of the
+					// OS-default browser, so "open chrome" / "open a website" use the assistant browser.
+					if (options.openInDefaultBrowser) {
+						const redirect = browserLaunchRedirect(requestedApp);
+						if (redirect) return options.openInDefaultBrowser(redirect.url);
+					}
 					const cacheHit =
 						cachePath && !isLikelyDirectLaunch(requestedApp)
 							? resolveRememberedLaunch(cachePath, requestedApp)
@@ -675,6 +725,11 @@ function createOpenAppTool(options: DesktopToolOptions): ToolDefinition {
 						if (!foundApp) {
 							const knownWebsite = resolveKnownWebsiteLaunch(requestedApp);
 							if (knownWebsite) {
+								// A known-website fallback resolves to a URL — open it in the default browser
+								// rather than the OS browser when AI browser control is available.
+								if (options.openInDefaultBrowser && /^https?:\/\//i.test(knownWebsite.launch)) {
+									return options.openInDefaultBrowser(knownWebsite.launch);
+								}
 								launchTarget = knownWebsite.launch;
 								launchKind = knownWebsite.kind;
 								launchDisplayName = knownWebsite.displayName;

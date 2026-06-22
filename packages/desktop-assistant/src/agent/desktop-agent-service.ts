@@ -417,6 +417,20 @@ export class DesktopAgentService {
 		this.refreshAllTools();
 	}
 
+	/**
+	 * Open a URL (or the default browser itself, when url is omitted) through the configured default
+	 * browser. Used to redirect open_app browser/URL launches away from the native OS browser.
+	 */
+	private async openViaDefaultBrowser(url?: string): Promise<{ stdout: string; stderr: string }> {
+		const host = this.browserHost;
+		if (!host) throw new Error("Browser control is not available.");
+		const target = this.settings.browser.defaultBrowser;
+		const openUrl = url ?? this.settings.browser.homeUrl;
+		await host.openUrl(target, openUrl);
+		const label = target === "built_in" ? "内置浏览器" : target === "chrome" ? "Chrome" : "Edge";
+		return { stdout: `已用默认浏览器（${label}）打开 ${openUrl}`, stderr: "" };
+	}
+
 	// ── Session registry / focus ────────────────────────────────────────────────
 
 	/** Add a context to the live registry, optionally focusing it. */
@@ -654,6 +668,7 @@ export class DesktopAgentService {
 		const tokenSavingTools = this.settings.tokenSaving.enabled
 			? createBrowserSnapshotReadTools(this.browserSnapshotStore)
 			: [];
+		const canRouteBrowser = this.settings.browser.allowAiControl && this.browserHost;
 		const desktopTools = createDesktopToolDefinitions({
 			host: this.options.host,
 			// Automation runs override the permission mode per their run policy; chat uses global settings.
@@ -663,6 +678,9 @@ export class DesktopAgentService {
 			activeMcpToolNames: () => this.activeMcpToolNames(),
 			sandbox: () => this.settings.sandbox,
 			sandboxManager: this.sandboxManager,
+			// Route open_app browser/URL launches through the configured default browser so the model
+			// can't sidestep it by opening the native OS browser.
+			openInDefaultBrowser: canRouteBrowser ? (url) => this.openViaDefaultBrowser(url) : undefined,
 		});
 		const personalSkillTools = createPersonalSkillToolDefinitions({
 			repository: this.personalSkillRepository,
