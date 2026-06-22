@@ -64,7 +64,7 @@ export function buildSandboxPathContext(
 }
 
 /** Expand `%VAR%` and a leading `~` against the environment / home directory. */
-function expandEnv(input: string): string {
+export function expandEnv(input: string): string {
 	return input
 		.replace(/%([^%]+)%/g, (whole, name: string) => process.env[name] ?? whole)
 		.replace(/^~(?=[\\/]|$)/, os.homedir());

@@ -48,6 +48,7 @@ import {
 	resolveDeepSeekApiConnection,
 } from "../shared/deepseek-connection.ts";
 import {
+	type AiBrowserPreference,
 	type ApiKeyValidationStatus,
 	type AppLaunchCacheView,
 	AUTOMATION_PERMISSION_MODES,
@@ -417,6 +418,20 @@ export class DesktopAgentService {
 		this.refreshAllTools();
 	}
 
+	/**
+	 * Open a URL (or the default browser itself, when url is omitted) through the configured default
+	 * browser. Used to redirect open_app browser/URL launches away from the native OS browser.
+	 */
+	private async openViaDefaultBrowser(url?: string): Promise<{ stdout: string; stderr: string }> {
+		const host = this.browserHost;
+		if (!host) throw new Error("Browser control is not available.");
+		const target = this.settings.browser.defaultBrowser;
+		const openUrl = url ?? this.settings.browser.homeUrl;
+		await host.openUrl(target, openUrl);
+		const label = target === "built_in" ? "内置浏览器" : target === "chrome" ? "Chrome" : "Edge";
+		return { stdout: `已用默认浏览器（${label}）打开 ${openUrl}`, stderr: "" };
+	}
+
 	// ── Session registry / focus ────────────────────────────────────────────────
 
 	/** Add a context to the live registry, optionally focusing it. */
@@ -631,8 +646,29 @@ export class DesktopAgentService {
 		};
 	}
 
-	/** True unless this MCP tool belongs to an Office MCP server whose capability is disabled. */
+	/** AI browser control is on and the built-in browser host is wired. */
+	private aiBrowserControlActive(): boolean {
+		return this.settings.browser.allowAiControl && this.browserHost !== undefined;
+	}
+
+	/** Built-in browser_* tools are exposed (preference built_in or auto). */
+	private builtInBrowserToolsActive(): boolean {
+		return this.aiBrowserControlActive() && this.settings.browser.aiBrowserPreference !== "external";
+	}
+
+	/** The external browser-control MCP is suppressed (preference built_in only). */
+	private externalBrowserMcpSuppressed(): boolean {
+		return this.aiBrowserControlActive() && this.settings.browser.aiBrowserPreference === "built_in";
+	}
+
+	/** True unless this MCP tool is gated off (disabled Office capability, or a superseded browser MCP). */
 	private isMcpToolEnabled(name: string): boolean {
+		// With the "built_in" browser preference, suppress any external browser-control MCP (mcp_browser_*):
+		// its extension is NOT connected to the assistant's built-in browser, so the model would otherwise
+		// pick it (take_control/list_tabs/controlled_status) and fail. "external"/"auto" keep it available.
+		if (this.externalBrowserMcpSuppressed() && isExternalBrowserControlToolName(name)) {
+			return false;
+		}
 		for (const gate of OFFICE_MCP_TOOL_GATES) {
 			if (name.startsWith(gate.prefix) && !this.settings.capabilities[gate.capability].enabled) {
 				return false;
@@ -654,6 +690,7 @@ export class DesktopAgentService {
 		const tokenSavingTools = this.settings.tokenSaving.enabled
 			? createBrowserSnapshotReadTools(this.browserSnapshotStore)
 			: [];
+		const canRouteBrowser = this.builtInBrowserToolsActive();
 		const desktopTools = createDesktopToolDefinitions({
 			host: this.options.host,
 			// Automation runs override the permission mode per their run policy; chat uses global settings.
@@ -663,6 +700,9 @@ export class DesktopAgentService {
 			activeMcpToolNames: () => this.activeMcpToolNames(),
 			sandbox: () => this.settings.sandbox,
 			sandboxManager: this.sandboxManager,
+			// Route open_app browser/URL launches through the configured default browser so the model
+			// can't sidestep it by opening the native OS browser.
+			openInDefaultBrowser: canRouteBrowser ? (url) => this.openViaDefaultBrowser(url) : undefined,
 		});
 		const personalSkillTools = createPersonalSkillToolDefinitions({
 			repository: this.personalSkillRepository,
@@ -679,7 +719,7 @@ export class DesktopAgentService {
 			network: this.settings.sandbox.enabled ? this.settings.sandbox.network : undefined,
 		});
 		const browserTools =
-			this.settings.browser.allowAiControl && this.browserHost ? createBrowserToolDefinitions(this.browserHost) : [];
+			this.builtInBrowserToolsActive() && this.browserHost ? createBrowserToolDefinitions(this.browserHost) : [];
 		return [
 			...mcpTools,
 			...tokenSavingTools,
@@ -695,7 +735,7 @@ export class DesktopAgentService {
 		return [
 			...this.activeMcpToolNames(),
 			...(this.settings.tokenSaving.enabled ? [...BROWSER_SNAPSHOT_READ_TOOL_NAMES] : []),
-			...(this.settings.browser.allowAiControl && this.browserHost ? [...BROWSER_TOOL_NAMES] : []),
+			...(this.builtInBrowserToolsActive() ? [...BROWSER_TOOL_NAMES] : []),
 			...getActiveDesktopToolNames(this.settings.capabilities),
 			...PERSONAL_SKILL_TOOL_NAMES,
 			...MEMO_TOOL_NAMES,
@@ -746,7 +786,12 @@ export class DesktopAgentService {
 						...(this.settings.mcp.enabled ? [buildMcpAppendPrompt(this.activeMcpToolNames())] : []),
 						...(this.settings.tokenSaving.enabled ? [buildTokenSavingAppendPrompt()] : []),
 						...(this.settings.browser.allowAiControl
-							? [buildBrowserRoutingAppendPrompt(this.settings.browser.defaultBrowser)]
+							? [
+									buildBrowserRoutingAppendPrompt(
+										this.settings.browser.defaultBrowser,
+										this.settings.browser.aiBrowserPreference,
+									),
+								]
 							: []),
 						buildSystemOperationAppendPrompt(skillFiles.system, this.settings.sandbox.enabled),
 						...(profile?.appendSystemPrompt ?? []),
@@ -2670,17 +2715,33 @@ function normalizeToolGates(value: unknown): Record<string, SandboxToolGate> {
 	return out;
 }
 
+/**
+ * External "Browser Control" MCP tools are wrapped as mcp_browser_* (e.g. mcp_browser_list_tabs,
+ * mcp_browser_control_take_control). They drive a separate extension/CDP-controlled browser, which
+ * is not connected to the assistant's built-in browser — so they are suppressed while AI browser
+ * control is active in favor of the built-in browser_* tools.
+ */
+export function isExternalBrowserControlToolName(name: string): boolean {
+	return name.startsWith("mcp_browser_");
+}
+
 export function normalizeBrowserSettings(update?: Partial<BrowserSettings>): BrowserSettings {
 	const d = DEFAULT_DESKTOP_ASSISTANT_SETTINGS.browser;
 	return {
 		defaultBrowser: normalizeBrowserTarget(update?.defaultBrowser),
 		allowAiControl: update?.allowAiControl ?? d.allowAiControl,
+		aiBrowserPreference: normalizeAiBrowserPreference(update?.aiBrowserPreference, d.aiBrowserPreference),
 		homeUrl: normalizeBrowserHomeUrl(update?.homeUrl, d.homeUrl),
 		maxTabs: Math.round(clampNumber(update?.maxTabs, d.maxTabs, 1, 32)),
 		persistStorage: true,
 		searchTemplate: normalizeSearchTemplate(update?.searchTemplate, d.searchTemplate),
 		shortcuts: normalizeBrowserShortcuts(update?.shortcuts, d.shortcuts),
 	};
+}
+
+function normalizeAiBrowserPreference(value: unknown, fallback: AiBrowserPreference): AiBrowserPreference {
+	if (value === "built_in" || value === "external" || value === "auto") return value;
+	return fallback;
 }
 
 const MAX_BROWSER_SHORTCUTS = 24;

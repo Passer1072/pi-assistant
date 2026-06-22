@@ -68,6 +68,74 @@ describe("desktop automation tools", () => {
 		expect(details.stdout).not.toContain("已在运行");
 	});
 
+	it("routes a URL launch through the default browser instead of the OS browser", async () => {
+		const calls: (string | undefined)[] = [];
+		const host = Object.assign(new DryRunDesktopAutomationHost(), {
+			startProcess: async () => {
+				throw new Error("startProcess must NOT be called for a browser/URL launch");
+			},
+		}) as DesktopAutomationHost;
+		const tools = createDesktopToolDefinitions({
+			host,
+			permissionMode: () => "tiered",
+			systemCapability: () => enabledSystemCapability,
+			openInDefaultBrowser: async (url) => {
+				calls.push(url);
+				return { stdout: `默认浏览器已打开 ${url ?? "(home)"}`, stderr: "" };
+			},
+		});
+		const tool = tools.find((entry) => entry.name === "open_app");
+		if (!tool) throw new Error("open_app tool missing");
+
+		const response = await tool.execute("t", { app: "https://example.com" }, undefined, undefined, stubContext());
+		const details = response.details as DesktopToolResult;
+		expect(details.status).toBe("succeeded");
+		expect(calls).toEqual(["https://example.com"]);
+	});
+
+	it("routes a browser-name launch (chrome) through the default browser with no url", async () => {
+		const calls: (string | undefined)[] = [];
+		const host = Object.assign(new DryRunDesktopAutomationHost(), {
+			startProcess: async () => {
+				throw new Error("startProcess must NOT be called for a chrome launch");
+			},
+		}) as DesktopAutomationHost;
+		const tools = createDesktopToolDefinitions({
+			host,
+			permissionMode: () => "tiered",
+			systemCapability: () => enabledSystemCapability,
+			openInDefaultBrowser: async (url) => {
+				calls.push(url);
+				return { stdout: "默认浏览器已打开", stderr: "" };
+			},
+		});
+		const tool = tools.find((entry) => entry.name === "open_app");
+		if (!tool) throw new Error("open_app tool missing");
+
+		const response = await tool.execute("t", { app: "Chrome" }, undefined, undefined, stubContext());
+		expect((response.details as DesktopToolResult).status).toBe("succeeded");
+		expect(calls).toEqual([undefined]);
+	});
+
+	it("does not route a normal app launch to the browser", async () => {
+		let browserCalled = false;
+		const tools = createDesktopToolDefinitions({
+			host: new DryRunDesktopAutomationHost(),
+			permissionMode: () => "tiered",
+			systemCapability: () => enabledSystemCapability,
+			openInDefaultBrowser: async () => {
+				browserCalled = true;
+				return { stdout: "", stderr: "" };
+			},
+		});
+		const tool = tools.find((entry) => entry.name === "open_app");
+		if (!tool) throw new Error("open_app tool missing");
+
+		const response = await tool.execute("t", { app: "notepad.exe" }, undefined, undefined, stubContext());
+		expect((response.details as DesktopToolResult).status).toBe("succeeded");
+		expect(browserCalled).toBe(false);
+	});
+
 	it("does not relaunch an app that is already running (focuses instead)", async () => {
 		const host = Object.assign(new DryRunDesktopAutomationHost(), {
 			// Simulate the process check returning RUNNING (whole-line output, as the real shell would).

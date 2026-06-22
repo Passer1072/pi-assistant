@@ -22,6 +22,7 @@ import type {
 	DesktopAssistantSettings,
 	DesktopAssistantSnapshot,
 	DesktopToolResult,
+	FileArtifact,
 	GlobalMemoryEntry,
 	MessageTokenUsageView,
 	PendingConfirmation,
@@ -34,6 +35,7 @@ import type {
 	VoiceOverlayState,
 } from "../shared/types.ts";
 import { DEFAULT_DESKTOP_ASSISTANT_SETTINGS } from "../shared/types.ts";
+import { collectArtifacts, extractArtifactCandidates, resolveArtifacts } from "./artifact-extractor.ts";
 import { buildAttachmentPromptBlock } from "./attachment-extractor.ts";
 import type { BrowserSnapshotStore } from "./browser-snapshot-store.ts";
 import type {
@@ -174,6 +176,12 @@ export class ConversationContext {
 	streamingText = "";
 	streamingThinking = "";
 	private nextDisplayOrder = 1;
+	/** Args captured at tool_execution_start, consumed at tool_execution_end (end events drop args). */
+	private pendingToolArgs = new Map<string, unknown>();
+	/** Epoch-ms when the current turn began; gates artifact freshness. */
+	private turnStartedAt = Date.now();
+	/** Canonical paths already surfaced as artifact cards this turn (dedupe across steps). */
+	private turnArtifactPaths = new Set<string>();
 	private streamingTextTimer: ReturnType<typeof setTimeout> | undefined;
 	private streamingThinkingTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingAssistantRunError:
@@ -506,6 +514,8 @@ export class ConversationContext {
 			this.pushTimeline(timelineItem);
 		}
 		if (event.type === "tool_execution_start") {
+			// End events drop args, so stash them here for artifact extraction.
+			this.pendingToolArgs.set(event.toolCallId, event.args);
 			this.streamingText = "";
 			// The reasoning that led to this tool call was already committed as its own
 			// thinking box at the preceding message_end, so nothing to carry over here.
@@ -517,6 +527,10 @@ export class ConversationContext {
 				this.confirmationAborted = true;
 				this.session?.abort();
 			}
+			if (!event.isError) {
+				this.surfaceToolArtifacts(event.toolCallId, event.toolName, event.result);
+			}
+			this.pendingToolArgs.delete(event.toolCallId);
 		}
 		if (event.type === "message_update") {
 			const assistantEvent = event.assistantMessageEvent;
@@ -622,6 +636,9 @@ export class ConversationContext {
 		}
 		this.confirmationAborted = false;
 		this.completedApprovalResults = [];
+		// Reset per-turn artifact tracking so output-file cards reflect this turn only.
+		this.turnStartedAt = Date.now();
+		this.turnArtifactPaths.clear();
 
 		// Push the user's original message immediately so the chat bubble shows
 		// clean text. The session receives the skill-routed prompt internally but
@@ -1267,6 +1284,37 @@ export class ConversationContext {
 		this.emitSnapshot();
 	}
 
+	/**
+	 * Derive output-file cards from a finished tool call and, if any new files were
+	 * produced this turn, push an `artifact` timeline item right after the tool's
+	 * own entry. Files already shown earlier in the turn are skipped so the same
+	 * deliverable isn't carded twice across multi-step edits.
+	 */
+	private surfaceToolArtifacts(toolCallId: string, toolName: string, result: unknown): void {
+		const args = this.pendingToolArgs.get(toolCallId);
+		let artifacts: FileArtifact[];
+		try {
+			artifacts = collectArtifacts(toolName, args, result, {
+				baseDir: this.deps.cwd,
+				since: this.turnStartedAt,
+			});
+		} catch {
+			return;
+		}
+		const fresh = artifacts.filter((artifact) => !this.turnArtifactPaths.has(artifact.path.toLowerCase()));
+		if (fresh.length === 0) return;
+		for (const artifact of fresh) this.turnArtifactPaths.add(artifact.path.toLowerCase());
+		this.pushTimeline({
+			id: `artifact-${toolCallId}`,
+			kind: "artifact",
+			title: fresh.length === 1 ? fresh[0].name : `${fresh.length} 个文件`,
+			status: "succeeded",
+			timestamp: Date.now(),
+			artifacts: fresh,
+			toolCallId,
+		});
+	}
+
 	private pushAssistantRunError(errorMessage: string | undefined, stopReason: "error" | "aborted"): void {
 		const detail = errorMessage?.trim();
 		const message =
@@ -1808,9 +1856,11 @@ function buildHistoryDisplaySourceFromArchive(
 		sessionId,
 		Date.parse(archive.updatedAt) || Date.now(),
 	);
+	const restoredArtifactPaths = new Set<string>();
 	for (const [index, tool] of archive.tools.entries()) {
+		const toolId = tool.toolCallId ?? `${tool.toolName}-${index}`;
 		upsertRestoredTimelineItem(timeline, {
-			id: tool.toolCallId ?? `${tool.toolName}-${index}`,
+			id: toolId,
 			kind: "tool",
 			title: `Tool ${tool.phase === "start" ? "started" : tool.phase === "end" ? "finished" : "running"}: ${tool.toolName}`,
 			detail: JSON.stringify(
@@ -1831,6 +1881,27 @@ function buildHistoryDisplaySourceFromArchive(
 			order: tool.sequence,
 			toolCallId: tool.toolCallId,
 		});
+		// Re-derive output-file cards from the persisted tool result. No turn-start is
+		// available on reload, so resolveArtifacts keeps only producer-tool outputs.
+		if (tool.phase === "end" && !tool.isError) {
+			const candidates = extractArtifactCandidates(tool.toolName, tool.args, tool.result);
+			const artifacts = resolveArtifacts(candidates).filter(
+				(artifact) => !restoredArtifactPaths.has(artifact.path.toLowerCase()),
+			);
+			if (artifacts.length > 0) {
+				for (const artifact of artifacts) restoredArtifactPaths.add(artifact.path.toLowerCase());
+				upsertRestoredTimelineItem(timeline, {
+					id: `artifact-${toolId}`,
+					kind: "artifact",
+					title: artifacts.length === 1 ? artifacts[0].name : `${artifacts.length} 个文件`,
+					status: "succeeded",
+					timestamp: Date.parse(tool.recordedAt) || Date.now(),
+					order: tool.sequence,
+					artifacts,
+					toolCallId: tool.toolCallId,
+				});
+			}
+		}
 	}
 	timeline.sort((left, right) => left.order - right.order);
 	return {
@@ -1981,6 +2052,7 @@ function rebuildArchiveStateFromRecords(
 	// message_end arrives, so it interleaves correctly with the tool calls.
 	let currentThinking: { firstSequence: number; parts: string[] } | undefined;
 	let pendingConfirmations: PendingConfirmation[] = [];
+	const restoredArtifactPaths = new Set<string>();
 
 	const commitThinkingSegment = (authoritativeText: string | undefined, fallbackOrder: number, ts: number): void => {
 		const text = (authoritativeText ?? currentThinking?.parts.join("") ?? "").trim();
@@ -2121,6 +2193,27 @@ function rebuildArchiveStateFromRecords(
 					toolCallId,
 				});
 				if (isEnd) {
+					if (!isError) {
+						// Producer-tool output paths live in result.details.target, so the result alone is
+						// enough to re-derive cards here (start-event args are not joined to end events).
+						const endResult = getNestedFieldFromRecord(record.payload, ["result"]);
+						const artifacts = resolveArtifacts(extractArtifactCandidates(toolName, undefined, endResult)).filter(
+							(artifact) => !restoredArtifactPaths.has(artifact.path.toLowerCase()),
+						);
+						if (artifacts.length > 0) {
+							for (const artifact of artifacts) restoredArtifactPaths.add(artifact.path.toLowerCase());
+							upsertRestoredTimelineItem(timeline, {
+								id: `artifact-${toolCallId ?? `${toolName}-${record.sequence}`}`,
+								kind: "artifact",
+								title: artifacts.length === 1 ? artifacts[0].name : `${artifacts.length} 个文件`,
+								status: "succeeded",
+								timestamp,
+								order: record.sequence,
+								artifacts,
+								toolCallId,
+							});
+						}
+					}
 					const details = parseDesktopToolResult(getNestedFieldFromRecord(record.payload, ["result"]));
 					if (details?.requiresConfirmation && details.status === "blocked") {
 						const pending: PendingConfirmation = {

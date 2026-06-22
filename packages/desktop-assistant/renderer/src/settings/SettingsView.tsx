@@ -2,7 +2,7 @@ import type React from "react";
 import { ArrowLeft, BookOpen, Check, ChevronRight, Eye, EyeOff, Globe, KeyRound, Loader2, Minus, Pin, PinOff, Plus, Plug, RefreshCw, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_DEEPSEEK_RELAY_URL } from "../../../src/shared/deepseek-connection.ts";
-import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, type BrowserNativeStatus, type BrowserStorageClearScope, type BrowserTarget, type DesktopAssistantSettings, type DesktopAssistantSnapshot, type WakeWordModelMetadata, type WebSearchProvider } from "../../../src/shared/types.ts";
+import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, type AiBrowserPreference, type BrowserNativeStatus, type BrowserStorageClearScope, type BrowserTarget, type DesktopAssistantSettings, type DesktopAssistantSnapshot, type WakeWordModelMetadata, type WebSearchProvider } from "../../../src/shared/types.ts";
 import { resolveWakeWordModelWakeWord } from "../../../src/shared/wake-word-settings.ts";
 import { cloneSettings, normalizeDraftSettingsBeforeApply, settingsKey } from "../settings-draft.ts";
 import { apiKeyStatusText, formatBytes, formatImportedAt } from "../formatters.ts";
@@ -432,6 +432,23 @@ export function SettingsView({
 					<span className="toggle-thumb" />
 				</button>
 			</label>
+			<label className="set-row">
+				<span>模型浏览器偏好</span>
+				<select
+					value={browserSettings.aiBrowserPreference}
+					disabled={!browserSettings.allowAiControl}
+					onChange={(event) =>
+						updateDraftBrowser({ aiBrowserPreference: event.target.value as AiBrowserPreference })
+					}
+				>
+					<option value="built_in">内置浏览器</option>
+					<option value="external">外置浏览器（Chrome / Edge）</option>
+					<option value="auto">自动（由模型决定）</option>
+				</select>
+			</label>
+			<p className="set-hint">
+				内置：只用内置浏览器工具；外置：用外部浏览器扩展 MCP 控制本机 Chrome/Edge（需已启用该 MCP）；自动：两者都给模型自行选择。
+			</p>
 			<label className="set-row">
 				<span>内置浏览器首页</span>
 				<input

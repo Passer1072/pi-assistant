@@ -1,4 +1,6 @@
+import { spawn } from "node:child_process";
 import { randomUUID } from "node:crypto";
+import { existsSync } from "node:fs";
 import { BrowserWindow, dialog, type IpcMain, Notification, shell } from "electron";
 import type { DesktopAgentService } from "../agent/desktop-agent-service.ts";
 import {
@@ -34,6 +36,8 @@ import {
 	type DeleteConversationResponse,
 	type DeleteForgeExtensionRequest,
 	type DesktopAssistantEvent,
+	type FileActionResponse,
+	type FilePathRequest,
 	type FocusSessionRequest,
 	type GlobalMemoryDeleteRequest,
 	type GlobalMemoryUpdateRequest,
@@ -217,6 +221,34 @@ function desktopEventToLogEntry(event: DesktopAssistantEvent): LogEntry | undefi
 		}
 	}
 	return undefined;
+}
+
+/**
+ * Put the real file onto the Windows clipboard (CF_HDROP) so the user can paste it
+ * into Explorer or another app. Electron's clipboard can't write a file drop, so we
+ * shell out to PowerShell's Set-Clipboard, which sets the file-drop list natively.
+ */
+function copyFileToClipboard(rawPath: string): Promise<FileActionResponse> {
+	const target = rawPath?.trim();
+	if (!target || !existsSync(target)) {
+		return Promise.resolve({ ok: false, error: "文件不存在或已被移动" });
+	}
+	const escaped = target.replace(/'/g, "''");
+	return new Promise((resolve) => {
+		const child = spawn(
+			"powershell.exe",
+			["-NoProfile", "-NonInteractive", "-Command", `Set-Clipboard -LiteralPath '${escaped}'`],
+			{ windowsHide: true },
+		);
+		let stderr = "";
+		child.stderr?.on("data", (chunk) => {
+			stderr += String(chunk);
+		});
+		child.on("error", (error) => resolve({ ok: false, error: error.message }));
+		child.on("close", (code) =>
+			resolve(code === 0 ? { ok: true } : { ok: false, error: stderr.trim() || `退出码 ${code}` }),
+		);
+	});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -567,6 +599,29 @@ export function registerDesktopAssistantIpc(params: {
 				request.browser ?? service.snapshot().settings.browser.defaultBrowser,
 				request.url,
 			),
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.openPath,
+		async (_event, request: FilePathRequest): Promise<FileActionResponse> => {
+			const target = request.path?.trim();
+			if (!target || !existsSync(target)) return { ok: false, error: "文件不存在或已被移动" };
+			// shell.openPath returns "" on success, or an error string.
+			const error = await shell.openPath(target);
+			return error ? { ok: false, error } : { ok: true };
+		},
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.showItemInFolder,
+		(_event, request: FilePathRequest): FileActionResponse => {
+			const target = request.path?.trim();
+			if (!target || !existsSync(target)) return { ok: false, error: "文件不存在或已被移动" };
+			shell.showItemInFolder(target);
+			return { ok: true };
+		},
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.copyFileToClipboard,
+		(_event, request: FilePathRequest): Promise<FileActionResponse> => copyFileToClipboard(request.path),
 	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openBuiltInBrowser, (_event, request: OpenBuiltInBrowserRequest = {}) =>
 		builtInBrowserController.open(request),

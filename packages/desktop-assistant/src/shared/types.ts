@@ -91,6 +91,14 @@ export interface AutoTitleSettings {
 export type BrowserTarget = "built_in" | "chrome" | "edge";
 export type BrowserStorageClearScope = "cookies" | "cache" | "site_data" | "all";
 
+/**
+ * Which browser control surface the AI uses:
+ * - built_in: only the built-in browser_* tools (external browser-control MCP suppressed)
+ * - external: the external browser-control MCP (controls the user's native Chrome/Edge); built-in browser_* off
+ * - auto: both surfaces available; the model decides
+ */
+export type AiBrowserPreference = "built_in" | "external" | "auto";
+
 /** A user-defined quick-launch button on the built-in browser home page. */
 export interface BrowserShortcut {
 	id: string;
@@ -110,6 +118,8 @@ export interface BrowserHistoryEntry {
 export interface BrowserSettings {
 	defaultBrowser: BrowserTarget;
 	allowAiControl: boolean;
+	/** Which browser control surface the AI prefers: built-in tools, external MCP, or auto. */
+	aiBrowserPreference: AiBrowserPreference;
 	homeUrl: string;
 	maxTabs: number;
 	persistStorage: true;
@@ -190,6 +200,17 @@ export interface OpenBuiltInBrowserRequest {
 export interface OpenUrlInDefaultBrowserRequest {
 	url: string;
 	browser?: BrowserTarget;
+}
+
+/** Request to act on a produced output file (open / reveal / copy). */
+export interface FilePathRequest {
+	path: string;
+}
+
+export interface FileActionResponse {
+	ok: boolean;
+	/** Present when ok is false. */
+	error?: string;
 }
 
 export interface BrowserNavigateRequest {
@@ -1021,13 +1042,38 @@ export interface TimelineItem {
 		| "voice"
 		| "retry"
 		| "error"
-		| "compaction";
+		| "compaction"
+		| "artifact";
 	title: string;
 	detail?: string;
 	status: AutomationStatus;
 	timestamp: number;
 	order: number;
 	toolCallId?: string;
+	/** Present on `artifact` items: the output files this tool step produced. */
+	artifacts?: FileArtifact[];
+}
+
+/**
+ * A file (or folder) the assistant produced as the result of a tool step.
+ * Surfaced in the conversation as an interactive shortcut card: left-click opens
+ * it, right-click offers open / reveal-in-folder / copy-file / copy-path. Derived
+ * (not separately stored) from tool results both live and on history reload, so
+ * the path is always validated against disk before a card is shown.
+ */
+export interface FileArtifact {
+	/** Canonical absolute path on disk. */
+	path: string;
+	/** Base name including extension, e.g. "图片转excel输出表.xlsx". */
+	name: string;
+	/** Lower-case extension without the dot ("xlsx"), or "" for folders/extensionless files. */
+	ext: string;
+	/** File size in bytes (0 for folders). */
+	sizeBytes: number;
+	/** Last-modified time (epoch ms). */
+	modifiedAt: number;
+	/** Whether the entry is a directory. */
+	isDirectory: boolean;
 }
 
 export interface ChatMessageView {
@@ -2075,6 +2121,7 @@ export const DEFAULT_DESKTOP_ASSISTANT_SETTINGS: DesktopAssistantSettings = {
 	browser: {
 		defaultBrowser: "built_in",
 		allowAiControl: true,
+		aiBrowserPreference: "built_in",
 		homeUrl: "https://www.google.com",
 		maxTabs: 12,
 		persistStorage: true,
@@ -2336,6 +2383,9 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	deleteAppLaunchCacheEntry: "desktop-assistant:delete-app-launch-cache-entry",
 	openAppLaunchCacheWindow: "desktop-assistant:open-app-launch-cache-window",
 	openUrlInDefaultBrowser: "desktop-assistant:open-url-in-default-browser",
+	openPath: "desktop-assistant:open-path",
+	showItemInFolder: "desktop-assistant:show-item-in-folder",
+	copyFileToClipboard: "desktop-assistant:copy-file-to-clipboard",
 	openBuiltInBrowser: "desktop-assistant:open-built-in-browser",
 	getBuiltInBrowserStatus: "desktop-assistant:get-built-in-browser-status",
 	builtInBrowserNavigate: "desktop-assistant:built-in-browser-navigate",

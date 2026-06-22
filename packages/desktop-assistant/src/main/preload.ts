@@ -55,6 +55,8 @@ import {
 	type DeleteForgeExtensionRequest,
 	type DesktopAssistantEvent,
 	type DesktopAssistantSnapshot,
+	type FileActionResponse,
+	type FilePathRequest,
 	type FocusSessionRequest,
 	type ForgeExtensionMutationResponse,
 	type GlobalMemoryClearResponse,
@@ -203,6 +205,9 @@ export interface DesktopAssistantApi {
 	deleteAppLaunchCacheEntry(request: DeleteAppLaunchCacheEntryRequest): Promise<AppLaunchCacheView>;
 	openAppLaunchCacheWindow(): Promise<void>;
 	openUrlInDefaultBrowser(request: OpenUrlInDefaultBrowserRequest): Promise<unknown>;
+	openPath(request: FilePathRequest): Promise<FileActionResponse>;
+	showItemInFolder(request: FilePathRequest): Promise<FileActionResponse>;
+	copyFileToClipboard(request: FilePathRequest): Promise<FileActionResponse>;
 	openBuiltInBrowser(request?: OpenBuiltInBrowserRequest): Promise<BuiltInBrowserStatus>;
 	getBuiltInBrowserStatus(): Promise<BuiltInBrowserStatus>;
 	builtInBrowserNavigate(request: BrowserNavigateRequest): Promise<BuiltInBrowserStatus>;
@@ -443,6 +448,12 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openAppLaunchCacheWindow) as Promise<void>,
 	openUrlInDefaultBrowser: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openUrlInDefaultBrowser, request) as Promise<unknown>,
+	openPath: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openPath, request) as Promise<FileActionResponse>,
+	showItemInFolder: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.showItemInFolder, request) as Promise<FileActionResponse>,
+	copyFileToClipboard: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.copyFileToClipboard, request) as Promise<FileActionResponse>,
 	openBuiltInBrowser: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openBuiltInBrowser, request ?? {}) as Promise<BuiltInBrowserStatus>,
 	getBuiltInBrowserStatus: () =>

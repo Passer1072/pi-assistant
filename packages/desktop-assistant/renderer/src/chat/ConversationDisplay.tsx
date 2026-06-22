@@ -3,6 +3,7 @@ import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessageView, TimelineItem } from "../../../src/shared/types.ts";
 import { AssistantMessageMarkdown } from "../AssistantMessageMarkdown.tsx";
 import { buildDisplayItems, type DisplayItem } from "../display-items.ts";
+import { FileArtifactList } from "./FileArtifactCard.tsx";
 
 function formatToolName(rawTitle: string): string {
 	const m = rawTitle.match(/Tool (?:started|finished|running):\s*(.+)/i);
@@ -261,6 +262,13 @@ export function DisplayItemRow({
 		return (
 			<div className="bubble-row assistant">
 				<MemoToolCallEntry item={t} expanded={expandedTools.has(t.id)} onToggle={() => onToggleTool(t.id)} />
+			</div>
+		);
+	}
+	if (item.kind === "artifact") {
+		return (
+			<div className="bubble-row assistant">
+				<FileArtifactList artifacts={item.item.artifacts ?? []} />
 			</div>
 		);
 	}

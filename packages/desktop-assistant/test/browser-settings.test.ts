@@ -1,6 +1,25 @@
 import { describe, expect, it } from "vitest";
-import { normalizeBrowserSettings, normalizeSettings } from "../src/agent/desktop-agent-service.ts";
+import {
+	isExternalBrowserControlToolName,
+	normalizeBrowserSettings,
+	normalizeSettings,
+} from "../src/agent/desktop-agent-service.ts";
 import { DEFAULT_DESKTOP_ASSISTANT_SETTINGS } from "../src/shared/types.ts";
+
+describe("isExternalBrowserControlToolName", () => {
+	it("matches external browser-control MCP tools (mcp_browser_*)", () => {
+		expect(isExternalBrowserControlToolName("mcp_browser_list_tabs")).toBe(true);
+		expect(isExternalBrowserControlToolName("mcp_browser_control_take_control")).toBe(true);
+		expect(isExternalBrowserControlToolName("mcp_browser_read_page")).toBe(true);
+	});
+
+	it("does not match the built-in browser_* tools or unrelated MCP tools", () => {
+		expect(isExternalBrowserControlToolName("browser_open_url")).toBe(false);
+		expect(isExternalBrowserControlToolName("browser_read_page")).toBe(false);
+		expect(isExternalBrowserControlToolName("mcp_ncm_play")).toBe(false);
+		expect(isExternalBrowserControlToolName("mcp_desktop_assistant_set")).toBe(false);
+	});
+});
 
 describe("normalizeBrowserSettings", () => {
 	it("returns the built-in default when given nothing", () => {
@@ -70,6 +89,15 @@ describe("normalizeBrowserSettings", () => {
 	it("caps shortcuts at 24", () => {
 		const many = Array.from({ length: 40 }, (_, i) => ({ id: `s${i}`, label: `L${i}`, url: `https://x${i}.com` }));
 		expect(normalizeBrowserSettings({ shortcuts: many as never }).shortcuts).toHaveLength(24);
+	});
+
+	it("normalizes aiBrowserPreference, defaulting and rejecting invalid values", () => {
+		expect(normalizeBrowserSettings(undefined).aiBrowserPreference).toBe("built_in");
+		expect(normalizeBrowserSettings({ aiBrowserPreference: "external" }).aiBrowserPreference).toBe("external");
+		expect(normalizeBrowserSettings({ aiBrowserPreference: "auto" }).aiBrowserPreference).toBe("auto");
+		expect(normalizeBrowserSettings({ aiBrowserPreference: "firefox" as never }).aiBrowserPreference).toBe(
+			"built_in",
+		);
 	});
 
 	it("validates the search template, falling back when %s or scheme is missing", () => {

@@ -4,11 +4,13 @@ export type DisplayItem =
 	| { kind: "message"; message: ChatMessageView }
 	| { kind: "thinking"; item: TimelineItem }
 	| { kind: "tool"; item: TimelineItem }
+	| { kind: "artifact"; item: TimelineItem }
 	| { kind: "notice"; item: TimelineItem };
 
 export function buildDisplayItems(messages: ChatMessageView[], timeline: TimelineItem[]): DisplayItem[] {
 	const thinkingItems = timeline.filter((item) => item.kind === "thinking");
 	const toolItems = timeline.filter((item) => item.kind === "tool" || item.kind === "confirmation");
+	const artifactItems = timeline.filter((item) => item.kind === "artifact" && (item.artifacts?.length ?? 0) > 0);
 	const noticeItems = timeline.filter((item) => item.kind === "compaction");
 	const all: Array<{ order: number; ts: number; item: DisplayItem }> = [
 		...messages.map((message) => ({
@@ -25,6 +27,11 @@ export function buildDisplayItems(messages: ChatMessageView[], timeline: Timelin
 			order: item.order,
 			ts: item.timestamp,
 			item: { kind: "tool" as const, item },
+		})),
+		...artifactItems.map((item) => ({
+			order: item.order,
+			ts: item.timestamp,
+			item: { kind: "artifact" as const, item },
 		})),
 		...noticeItems.map((item) => ({
 			order: item.order,
@@ -50,5 +57,7 @@ function displayKindRank(kind: DisplayItem["kind"]): number {
 	// order tie it sorts ahead of tools/notices but behind the message it belongs to.
 	if (kind === "thinking") return 1;
 	if (kind === "notice") return 2;
-	return 3;
+	if (kind === "tool") return 3;
+	// An artifact card sits right after the tool that produced it on an order tie.
+	return 4;
 }

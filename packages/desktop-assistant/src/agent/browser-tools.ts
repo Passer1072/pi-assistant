@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import type {
+	AiBrowserPreference,
 	BrowserClearStorageRequest,
 	BrowserCookieRequest,
 	BrowserElementActionRequest,
@@ -18,6 +19,7 @@ import type {
 
 export interface BrowserToolHost {
 	getDefaultBrowser(): BrowserTarget;
+	listTabs(target: BrowserTarget): Promise<unknown>;
 	openUrl(target: BrowserTarget, url: string): Promise<unknown>;
 	newTab(target: BrowserTarget, url?: string): Promise<unknown>;
 	switchTab(target: BrowserTarget, request: BrowserTabRequest): Promise<unknown>;
@@ -35,6 +37,7 @@ export interface BrowserToolHost {
 }
 
 export const BROWSER_TOOL_NAMES = [
+	"browser_list_tabs",
 	"browser_open_url",
 	"browser_new_tab",
 	"browser_switch_tab",
@@ -73,6 +76,21 @@ const ROUTING_GUIDELINES = [
 
 export function createBrowserToolDefinitions(host: BrowserToolHost): ToolDefinition[] {
 	return [
+		defineTool({
+			name: "browser_list_tabs",
+			label: "List browser tabs",
+			description:
+				"List the open tabs in the browser (id, title, url, which is active). Use this to see the current browser state before reading, switching, or acting on a tab.",
+			promptSnippet: "List the open browser tabs to see the current state before acting.",
+			promptGuidelines: ROUTING_GUIDELINES,
+			parameters: Type.Object({
+				browser: optionalBrowser,
+			}),
+			execute: async (_id, params) =>
+				browserResult(host, "List browser tabs", "browser_list_tabs", "tabs", params.browser, (target) =>
+					host.listTabs(target),
+				),
+		}),
 		defineTool({
 			name: "browser_open_url",
 			label: "Open browser URL",
@@ -415,11 +433,40 @@ export function createBrowserToolDefinitions(host: BrowserToolHost): ToolDefinit
 	];
 }
 
-export function buildBrowserRoutingAppendPrompt(defaultBrowser: BrowserTarget): string {
+export function buildBrowserRoutingAppendPrompt(
+	defaultBrowser: BrowserTarget,
+	preference: AiBrowserPreference = "built_in",
+): string {
+	const common = [
+		"NEVER use open_app, app_interaction, shell commands, or keyboard/mouse automation to open a URL or operate web pages — use the browser tools below.",
+	];
+	if (preference === "external") {
+		return [
+			"<browser_routing_policy>",
+			"The user prefers the EXTERNAL browser (their installed Chrome/Edge).",
+			"Use the external browser-control MCP tools (take_control, list_tabs, controlled_status, read_page, find_element, cursor_*, etc.) to open, read, inspect, and control web pages.",
+			"The built-in browser_* tools are disabled in this mode; do not expect them.",
+			...common,
+			"</browser_routing_policy>",
+		].join("\n");
+	}
+	if (preference === "auto") {
+		return [
+			"<browser_routing_policy>",
+			`Two browser control surfaces are available. The user's default browser is ${defaultBrowser}.`,
+			"The built-in browser_* tools (browser_open_url, browser_list_tabs, browser_read_page, browser_query_elements, …) control the assistant's own browser.",
+			"The external browser-control MCP tools control the user's installed Chrome/Edge via its extension.",
+			"Pick ONE surface that fits the task and stick with it; do not mix or switch needlessly. Prefer the built-in browser_* tools unless the user clearly wants their own installed browser.",
+			...common,
+			"</browser_routing_policy>",
+		].join("\n");
+	}
 	return [
 		"<browser_routing_policy>",
 		`The user's default browser is ${defaultBrowser}.`,
-		"Use browser_* tools for AI browser actions, opening webpages, reading webpages, and browser automation.",
+		"For ANY task involving a website, web page, URL, opening/reading/searching web content in a browser, or browser automation, you MUST use the browser_* tools (e.g. browser_open_url, browser_list_tabs, browser_read_page, browser_query_elements). They are the only correct way to open, read, inspect, and control web content.",
+		...common,
+		"Do NOT use external browser-control or browser-extension MCP tools (take_control, list_tabs, controlled_status, cursor_*, etc.) — they target a separate external browser that is NOT connected to this assistant's browser. To read tabs or page state, use browser_list_tabs / browser_read_page / browser_query_elements on this browser.",
 		"Omit the browser parameter so the browser_* tools use the user's default browser.",
 		"Only pass browser when the user explicitly says to use Chrome, Edge, or the built-in browser for this operation.",
 		"Do not casually switch browsers. If the default browser is unavailable or lacks a required capability, say so and choose the smallest clear fallback.",
