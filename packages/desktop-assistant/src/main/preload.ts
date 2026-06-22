@@ -3,6 +3,46 @@ import {
 	type AbortRequest,
 	type ApiKeyUpdateRequest,
 	type AppLaunchCacheView,
+	type AutomationCancelRunRequest,
+	type AutomationCreateRequest,
+	type AutomationDeleteRequest,
+	type AutomationDesignChatRequest,
+	type AutomationDesignChatResponse,
+	type AutomationDesignStateResponse,
+	type AutomationDraft,
+	type AutomationDraftApplyRequest,
+	type AutomationDraftGetRequest,
+	type AutomationDraftSaveRequest,
+	type AutomationDraftSaveResponse,
+	type AutomationFlow,
+	type AutomationGetRequest,
+	type AutomationListResponse,
+	type AutomationOpenEditorRequest,
+	type AutomationRunRecord,
+	type AutomationRunRequest,
+	type AutomationRunResponse,
+	type AutomationSetEnabledRequest,
+	type AutomationUpdateRequest,
+	type BrowserClearStorageRequest,
+	type BrowserClearStorageResponse,
+	type BrowserCookieRequest,
+	type BrowserCookieView,
+	type BrowserElementActionRequest,
+	type BrowserElementSnapshot,
+	type BrowserKeyRequest,
+	type BrowserNativeStatus,
+	type BrowserNavigateRequest,
+	type BrowserPageSnapshot,
+	type BrowserQueryElementsRequest,
+	type BrowserReadPageRequest,
+	type BrowserScreenshotRequest,
+	type BrowserScreenshotResponse,
+	type BrowserScrollRequest,
+	type BrowserSetBoundsRequest,
+	type BrowserTabRequest,
+	type BrowserVirtualMouseRequest,
+	type BuiltInBrowserEvent,
+	type BuiltInBrowserStatus,
 	type ClearConversationHistoryResponse,
 	type CloseSessionRequest,
 	type ConfirmationUpdateRequest,
@@ -44,6 +84,8 @@ import {
 	type MemoSetReminderRequest,
 	type MemoSnoozeRequest,
 	type MemoUpdateRequest,
+	type OpenBuiltInBrowserRequest,
+	type OpenUrlInDefaultBrowserRequest,
 	type PersonalSkillArchiveRequest,
 	type PersonalSkillFileView,
 	type PersonalSkillListResponse,
@@ -135,6 +177,20 @@ export interface DesktopAssistantApi {
 	deleteGlobalMemory(request: GlobalMemoryDeleteRequest): Promise<GlobalMemoryListResponse>;
 	clearGlobalMemories(): Promise<GlobalMemoryClearResponse>;
 	updateGlobalMemory(request: GlobalMemoryUpdateRequest): Promise<GlobalMemoryEntry | undefined>;
+	automationList(): Promise<AutomationListResponse>;
+	automationGet(request: AutomationGetRequest): Promise<AutomationFlow | undefined>;
+	automationCreate(request: AutomationCreateRequest): Promise<AutomationFlow>;
+	automationUpdate(request: AutomationUpdateRequest): Promise<AutomationFlow>;
+	automationDelete(request: AutomationDeleteRequest): Promise<AutomationListResponse>;
+	automationSetEnabled(request: AutomationSetEnabledRequest): Promise<AutomationFlow>;
+	automationRun(request: AutomationRunRequest): Promise<AutomationRunResponse>;
+	automationCancelRun(request: AutomationCancelRunRequest): Promise<AutomationRunRecord | undefined>;
+	automationOpenEditor(request?: AutomationOpenEditorRequest): Promise<void>;
+	automationDraftGet(request?: AutomationDraftGetRequest): Promise<AutomationDraft>;
+	automationDraftApply(request: AutomationDraftApplyRequest): Promise<AutomationDraft>;
+	automationDraftSave(request?: AutomationDraftSaveRequest): Promise<AutomationDraftSaveResponse>;
+	automationDesignChat(request: AutomationDesignChatRequest): Promise<AutomationDesignChatResponse>;
+	automationDesignState(): Promise<AutomationDesignStateResponse>;
 	listMemos(request?: MemoListRequest): Promise<MemoListResponse>;
 	createMemo(request: MemoCreateRequest): Promise<MemoItem>;
 	updateMemo(request: MemoUpdateRequest): Promise<MemoItem>;
@@ -146,6 +202,29 @@ export interface DesktopAssistantApi {
 	clearAppLaunchCache(): Promise<AppLaunchCacheView>;
 	deleteAppLaunchCacheEntry(request: DeleteAppLaunchCacheEntryRequest): Promise<AppLaunchCacheView>;
 	openAppLaunchCacheWindow(): Promise<void>;
+	openUrlInDefaultBrowser(request: OpenUrlInDefaultBrowserRequest): Promise<unknown>;
+	openBuiltInBrowser(request?: OpenBuiltInBrowserRequest): Promise<BuiltInBrowserStatus>;
+	getBuiltInBrowserStatus(): Promise<BuiltInBrowserStatus>;
+	builtInBrowserNavigate(request: BrowserNavigateRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserNewTab(request?: { url?: string }): Promise<BuiltInBrowserStatus>;
+	builtInBrowserSwitchTab(request: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserCloseTab(request: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserGoBack(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserGoForward(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserReload(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserStop(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserSetContentBounds(request: BrowserSetBoundsRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserClearStorage(request: BrowserClearStorageRequest): Promise<BrowserClearStorageResponse>;
+	builtInBrowserGetNativeStatus(): Promise<BrowserNativeStatus>;
+	builtInBrowserReadPage(request?: BrowserReadPageRequest): Promise<BrowserPageSnapshot>;
+	builtInBrowserQueryElements(request?: BrowserQueryElementsRequest): Promise<BrowserElementSnapshot[]>;
+	builtInBrowserClick(request: BrowserElementActionRequest): Promise<BrowserPageSnapshot>;
+	builtInBrowserTypeText(request: BrowserElementActionRequest): Promise<BrowserPageSnapshot>;
+	builtInBrowserPressKey(request: BrowserKeyRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserScroll(request?: BrowserScrollRequest): Promise<BrowserPageSnapshot>;
+	builtInBrowserScreenshot(request?: BrowserScreenshotRequest): Promise<BrowserScreenshotResponse>;
+	builtInBrowserGetCookies(request?: BrowserCookieRequest): Promise<BrowserCookieView[]>;
+	builtInBrowserVirtualMouse(request: BrowserVirtualMouseRequest): Promise<BuiltInBrowserStatus>;
 	getSandboxStatus(): Promise<SandboxStatus>;
 	initSandbox(): Promise<SandboxStatus>;
 	resetSandbox(): Promise<SandboxStatus>;
@@ -175,6 +254,7 @@ export interface DesktopAssistantApi {
 	onWakeKwsWake(listener: (event: WakeKwsWakeEvent) => void): () => void;
 	onEvent(listener: (event: DesktopAssistantEvent) => void): () => void;
 	onLogEvent(listener: (entry: LogEntry) => void): () => void;
+	onBuiltInBrowserEvent(listener: (event: BuiltInBrowserEvent) => void): () => void;
 	onPetDebugEvent(listener: (entry: PetDebugStateEvent) => void): () => void;
 	getPathForFile(file: File): string;
 	minimizeWindow(): void;
@@ -308,6 +388,42 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.updateGlobalMemory, request) as Promise<
 			GlobalMemoryEntry | undefined
 		>,
+	automationList: () =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationList) as Promise<AutomationListResponse>,
+	automationGet: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationGet, request) as Promise<AutomationFlow | undefined>,
+	automationCreate: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationCreate, request) as Promise<AutomationFlow>,
+	automationUpdate: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationUpdate, request) as Promise<AutomationFlow>,
+	automationDelete: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationDelete, request) as Promise<AutomationListResponse>,
+	automationSetEnabled: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationSetEnabled, request) as Promise<AutomationFlow>,
+	automationRun: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationRun, request) as Promise<AutomationRunResponse>,
+	automationCancelRun: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationCancelRun, request) as Promise<
+			AutomationRunRecord | undefined
+		>,
+	automationOpenEditor: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationOpenEditor, request ?? {}) as Promise<void>,
+	automationDraftGet: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationDraftGet, request ?? {}) as Promise<AutomationDraft>,
+	automationDraftApply: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationDraftApply, request) as Promise<AutomationDraft>,
+	automationDraftSave: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.automationDraftSave,
+			request ?? {},
+		) as Promise<AutomationDraftSaveResponse>,
+	automationDesignChat: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.automationDesignChat,
+			request,
+		) as Promise<AutomationDesignChatResponse>,
+	automationDesignState: () =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationDesignState) as Promise<AutomationDesignStateResponse>,
 	listMemos: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoList, request ?? {}) as Promise<MemoListResponse>,
 	createMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoCreate, request) as Promise<MemoItem>,
@@ -325,6 +441,86 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.deleteAppLaunchCacheEntry, request) as Promise<AppLaunchCacheView>,
 	openAppLaunchCacheWindow: () =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openAppLaunchCacheWindow) as Promise<void>,
+	openUrlInDefaultBrowser: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openUrlInDefaultBrowser, request) as Promise<unknown>,
+	openBuiltInBrowser: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openBuiltInBrowser, request ?? {}) as Promise<BuiltInBrowserStatus>,
+	getBuiltInBrowserStatus: () =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.getBuiltInBrowserStatus) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserNavigate: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserNavigate, request) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserNewTab: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserNewTab,
+			request ?? {},
+		) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserSwitchTab: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserSwitchTab, request) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserCloseTab: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserCloseTab, request) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserGoBack: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGoBack,
+			request ?? {},
+		) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserGoForward: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGoForward,
+			request ?? {},
+		) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserReload: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserReload,
+			request ?? {},
+		) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserStop: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserStop, request ?? {}) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserSetContentBounds: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserSetContentBounds,
+			request,
+		) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserClearStorage: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserClearStorage,
+			request,
+		) as Promise<BrowserClearStorageResponse>,
+	builtInBrowserGetNativeStatus: () =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGetNativeStatus) as Promise<BrowserNativeStatus>,
+	builtInBrowserReadPage: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserReadPage,
+			request ?? {},
+		) as Promise<BrowserPageSnapshot>,
+	builtInBrowserQueryElements: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserQueryElements, request ?? {}) as Promise<
+			BrowserElementSnapshot[]
+		>,
+	builtInBrowserClick: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserClick, request) as Promise<BrowserPageSnapshot>,
+	builtInBrowserTypeText: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserTypeText, request) as Promise<BrowserPageSnapshot>,
+	builtInBrowserPressKey: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserPressKey, request) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserScroll: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserScroll,
+			request ?? {},
+		) as Promise<BrowserPageSnapshot>,
+	builtInBrowserScreenshot: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserScreenshot,
+			request ?? {},
+		) as Promise<BrowserScreenshotResponse>,
+	builtInBrowserGetCookies: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGetCookies, request ?? {}) as Promise<
+			BrowserCookieView[]
+		>,
+	builtInBrowserVirtualMouse: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserVirtualMouse,
+			request,
+		) as Promise<BuiltInBrowserStatus>,
 	getSandboxStatus: () => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.getSandboxStatus) as Promise<SandboxStatus>,
 	initSandbox: () => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.initSandbox) as Promise<SandboxStatus>,
 	resetSandbox: () => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.resetSandbox) as Promise<SandboxStatus>,
@@ -375,7 +571,9 @@ const api: DesktopAssistantApi = {
 		return () => ipcRenderer.off(DESKTOP_ASSISTANT_CHANNELS.wakeKwsEvent, wrapped);
 	},
 	onEvent: (listener) => {
-		const wrapped = (_event: Electron.IpcRendererEvent, payload: DesktopAssistantEvent) => listener(payload);
+		const wrapped = (_event: Electron.IpcRendererEvent, payload: DesktopAssistantEvent) => {
+			listener(payload);
+		};
 		ipcRenderer.on(DESKTOP_ASSISTANT_CHANNELS.events, wrapped);
 		return () => ipcRenderer.off(DESKTOP_ASSISTANT_CHANNELS.events, wrapped);
 	},
@@ -383,6 +581,11 @@ const api: DesktopAssistantApi = {
 		const wrapped = (_event: Electron.IpcRendererEvent, payload: LogEntry) => listener(payload);
 		ipcRenderer.on(DESKTOP_ASSISTANT_CHANNELS.logEvent, wrapped);
 		return () => ipcRenderer.off(DESKTOP_ASSISTANT_CHANNELS.logEvent, wrapped);
+	},
+	onBuiltInBrowserEvent: (listener) => {
+		const wrapped = (_event: Electron.IpcRendererEvent, payload: BuiltInBrowserEvent) => listener(payload);
+		ipcRenderer.on(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserEvent, wrapped);
+		return () => ipcRenderer.off(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserEvent, wrapped);
 	},
 	onPetDebugEvent: (listener) => {
 		const wrapped = (_event: Electron.IpcRendererEvent, payload: PetDebugStateEvent) => listener(payload);

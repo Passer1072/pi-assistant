@@ -51,7 +51,32 @@ import {
 	type ApiKeyValidationStatus,
 	type AppLaunchCacheView,
 	AUTOMATION_PERMISSION_MODES,
+	type AutomationCancelRunRequest,
+	type AutomationCreateRequest,
+	type AutomationDeleteRequest,
+	type AutomationDesignChatRequest,
+	type AutomationDesignChatResponse,
+	type AutomationDesignStateResponse,
+	type AutomationDraft,
+	type AutomationDraftApplyRequest,
+	type AutomationDraftGetRequest,
+	type AutomationDraftSaveRequest,
+	type AutomationDraftSaveResponse,
+	type AutomationFlow,
+	type AutomationGetRequest,
+	type AutomationListResponse,
+	type AutomationOpenEditorRequest,
 	type AutomationPermissionMode,
+	type AutomationProgressEvent,
+	type AutomationRunRecord,
+	type AutomationRunRequest,
+	type AutomationRunResponse,
+	type AutomationSetEnabledRequest,
+	type AutomationSummary,
+	type AutomationUpdateRequest,
+	type BrowserSettings,
+	type BrowserShortcut,
+	type BrowserTarget,
 	type ClearConversationHistoryResponse,
 	type ConversationHistoryEntry,
 	DEFAULT_API_KEY_STATUS,
@@ -64,6 +89,8 @@ import {
 	type DesktopAssistantSettings,
 	type DesktopAssistantSnapshot,
 	type DesktopCapabilityId,
+	type FlowEdge,
+	type FlowNode,
 	type ForgeExtensionMutationResponse,
 	type GlobalMemoryEntry,
 	type GlobalMemoryListResponse,
@@ -118,8 +145,23 @@ import {
 	type VoiceOverlayState,
 } from "../shared/types.ts";
 import { VOICE_STT_AUTH_PROVIDER } from "../voice/stt-client.ts";
+import { AutomationDraftSession } from "./automation-draft-session.ts";
+import { AutomationRepositoryService } from "./automation-repository.ts";
+import {
+	AUTOMATION_RUN_TOOL_NAMES,
+	type AutomationRunToolHost,
+	createAutomationRunToolDefinitions,
+} from "./automation-run-tools.ts";
+import { AutomationRunner } from "./automation-runner.ts";
+import { AutomationScheduler, computeNextRun } from "./automation-scheduler.ts";
 import { BrowserSnapshotStore } from "./browser-snapshot-store.ts";
 import { BROWSER_SNAPSHOT_READ_TOOL_NAMES, createBrowserSnapshotReadTools } from "./browser-snapshot-tool.ts";
+import {
+	BROWSER_TOOL_NAMES,
+	type BrowserToolHost,
+	buildBrowserRoutingAppendPrompt,
+	createBrowserToolDefinitions,
+} from "./browser-tools.ts";
 import {
 	type AiReadableConversationArchive,
 	ConversationArchiveCoordinator,
@@ -129,6 +171,7 @@ import {
 import {
 	ConversationContext,
 	type ConversationContextDeps,
+	type ConversationRuntimeProfile,
 	HISTORY_PAGE_LIMIT,
 	normalizeHistoryLimit,
 	normalizeMemoryLimit,
@@ -151,6 +194,7 @@ import {
 	syncDeepSeekRuntimeAuth,
 	validateDeepSeekApiKey,
 } from "./deepseek.ts";
+import { createFlowDesignToolDefinitions, FLOW_DESIGN_TOOL_NAMES } from "./flow-design-tools.ts";
 import { MemoReminderScheduler } from "./memo-reminder-scheduler.ts";
 import { MemoRepositoryService } from "./memo-repository.ts";
 import { createMemoToolDefinitions, MEMO_TOOL_NAMES, type MemoToolHost } from "./memo-tools.ts";
@@ -192,6 +236,10 @@ export interface DesktopAgentServiceOptions {
 	sandboxPaths?: Partial<SandboxPathContext>;
 	/** Directory for the memo/to-do JSON store (main passes userData/memos). Defaults to agentDir/memos. */
 	memoDir?: string;
+	/** Directory for the automation JSON store (main passes userData/automations). Defaults to agentDir/automations. */
+	automationDir?: string;
+	openFlowEditorWindow?: (flowId?: string) => Promise<void>;
+	browserHost?: BrowserToolHost;
 }
 
 type Listener = (event: DesktopAssistantEvent) => void;
@@ -232,11 +280,17 @@ export class DesktopAgentService {
 	private memoryStore: MemoryStore;
 	private memoRepository: MemoRepositoryService;
 	private memoReminderScheduler: MemoReminderScheduler;
+	private automationRepository: AutomationRepositoryService;
+	private automationScheduler: AutomationScheduler;
+	private automationDraftSession: AutomationDraftSession;
+	private automationRunner: AutomationRunner;
+	private automationDesignContext: ConversationContext | undefined;
 	private personalSkillRepository: PersonalSkillRepositoryService;
 	private mcpManager: McpClientManager;
 	private softwarePluginManager: SoftwarePluginManager;
 	private latestSoftwarePluginProgress: SoftwarePluginOperationProgress | undefined;
 	private browserSnapshotStore = new BrowserSnapshotStore();
+	private browserHost: BrowserToolHost | undefined;
 	/**
 	 * All live conversations, keyed by a stable internal id (NOT the sessionId,
 	 * which can change on a mid-session fork). Each context owns its own session,
@@ -274,6 +328,7 @@ export class DesktopAgentService {
 
 	constructor(options: DesktopAgentServiceOptions) {
 		this.options = options;
+		this.browserHost = options.browserHost;
 		this.mcpSettingsPath = join(options.agentDir, "mcp-settings.json");
 		this.sandboxSettingsPath = join(options.agentDir, "sandbox.json");
 		const initialSettings = normalizeSettings(options.settings);
@@ -311,6 +366,23 @@ export class DesktopAgentService {
 		this.memoryStore = new MemoryStore(options.cwd, options.saveDir);
 		this.memoRepository = new MemoRepositoryService(options.memoDir ?? join(options.agentDir, "memos"));
 		this.memoReminderScheduler = new MemoReminderScheduler((memoId, missed) => this.onMemoReminder(memoId, missed));
+		this.automationRepository = new AutomationRepositoryService(
+			options.automationDir ?? join(options.agentDir, "automations"),
+		);
+		this.automationScheduler = new AutomationScheduler((flowId, missed) => this.onAutomationFire(flowId, missed));
+		this.automationDraftSession = new AutomationDraftSession((draft) =>
+			this.emit({ type: "automation_draft_changed", automationDraft: draft }),
+		);
+		this.automationRunner = new AutomationRunner({
+			recordRunStart: (flowId, trigger, sessionId) =>
+				this.automationRepository.recordRunStart(flowId, trigger, sessionId),
+			recordRunFinish: (flowId, runId, status, update) =>
+				this.automationRepository.recordRunFinish(flowId, runId, status, update),
+			emitChanged: (flowId) => this.emitAutomationChanged(flowId),
+			emitProgress: (flowId, runId, message) =>
+				this.emitAutomationProgress({ flowId, runId, kind: "log", message, timestamp: new Date().toISOString() }),
+			createBackgroundConversation: (flow, run) => this.createAutomationConversation(flow, run),
+		});
 		this.personalSkillRepository = new PersonalSkillRepositoryService(options.cwd);
 		this.softwarePluginManager = new SoftwarePluginManager({
 			agentDir: options.agentDir,
@@ -338,6 +410,11 @@ export class DesktopAgentService {
 			SessionManager.create(options.cwd, this.coordinator.paths.sessionsDir),
 		);
 		this.registerContext(initial, { focus: true });
+	}
+
+	setBrowserHost(browserHost: BrowserToolHost): void {
+		this.browserHost = browserHost;
+		this.refreshAllTools();
 	}
 
 	// ── Session registry / focus ────────────────────────────────────────────────
@@ -373,6 +450,9 @@ export class DesktopAgentService {
 		let bestKey: string | undefined;
 		let bestAt = Number.NEGATIVE_INFINITY;
 		for (const [key, context] of this.sessions) {
+			// Never let an automation run/design background context become the default
+			// focused conversation for normal chat.
+			if (!this.isStandardContext(context)) continue;
 			if (context.lastActivityAt >= bestAt) {
 				bestAt = context.lastActivityAt;
 				bestKey = key;
@@ -424,7 +504,14 @@ export class DesktopAgentService {
 		if (this.sessions.size <= DesktopAgentService.MAX_LIVE_SESSIONS) return;
 		const evictable = [...this.sessions.entries()]
 			.filter(
-				([key, context]) => key !== this.focusedKey && !context.isBusy && context.pendingConfirmations.length === 0,
+				([key, context]) =>
+					key !== this.focusedKey &&
+					// Automation run/design contexts manage their own lifecycle (the design
+					// session is a reused singleton; run sessions self-dispose when finished),
+					// so the capacity cap only evicts ordinary chat conversations.
+					this.isStandardContext(context) &&
+					!context.isBusy &&
+					context.pendingConfirmations.length === 0,
 			)
 			.sort((left, right) => left[1].lastActivityAt - right[1].lastActivityAt);
 		let overflow = this.sessions.size - DesktopAgentService.MAX_LIVE_SESSIONS;
@@ -440,6 +527,9 @@ export class DesktopAgentService {
 	private buildSessionSummaries(): SessionSummary[] {
 		const summaries: SessionSummary[] = [];
 		for (const context of this.sessions.values()) {
+			// Hide the AI flow-design session — it's editor plumbing, not a chat. Automation
+			// RUN sessions stay visible so the user can open one and watch its timeline.
+			if (context.profileKind === "automation_design") continue;
 			summaries.push({
 				sessionId: context.sessionId,
 				title: this.deriveSessionTitle(context),
@@ -452,6 +542,10 @@ export class DesktopAgentService {
 			});
 		}
 		return summaries.sort((a, b) => b.lastActivityAt - a.lastActivityAt);
+	}
+
+	private isStandardContext(context: ConversationContext): boolean {
+		return context.profileKind === undefined;
 	}
 
 	private deriveSessionTitle(context: ConversationContext): string {
@@ -553,7 +647,7 @@ export class DesktopAgentService {
 		return this.mcpManager.getActiveToolNames().filter((name) => this.isMcpToolEnabled(name));
 	}
 
-	private createCustomTools() {
+	private createCustomTools(options: { permissionMode?: AutomationPermissionMode } = {}) {
 		const mcpTools = this.settings.mcp.enabled
 			? this.mcpManager.getTools().filter((tool) => this.isMcpToolEnabled(tool.name))
 			: [];
@@ -562,7 +656,8 @@ export class DesktopAgentService {
 			: [];
 		const desktopTools = createDesktopToolDefinitions({
 			host: this.options.host,
-			permissionMode: () => this.settings.permissionMode,
+			// Automation runs override the permission mode per their run policy; chat uses global settings.
+			permissionMode: () => options.permissionMode ?? this.settings.permissionMode,
 			systemCapability: () => this.settings.capabilities.system,
 			appLaunchCachePath: this.appLaunchCachePath,
 			activeMcpToolNames: () => this.activeMcpToolNames(),
@@ -583,7 +678,29 @@ export class DesktopAgentService {
 			searxngUrl: ws?.searxngUrl,
 			network: this.settings.sandbox.enabled ? this.settings.sandbox.network : undefined,
 		});
-		return [...mcpTools, ...tokenSavingTools, ...desktopTools, ...personalSkillTools, ...webTools, ...memoTools];
+		const browserTools =
+			this.settings.browser.allowAiControl && this.browserHost ? createBrowserToolDefinitions(this.browserHost) : [];
+		return [
+			...mcpTools,
+			...tokenSavingTools,
+			...browserTools,
+			...desktopTools,
+			...personalSkillTools,
+			...webTools,
+			...memoTools,
+		];
+	}
+
+	private createActiveToolNames(): string[] {
+		return [
+			...this.activeMcpToolNames(),
+			...(this.settings.tokenSaving.enabled ? [...BROWSER_SNAPSHOT_READ_TOOL_NAMES] : []),
+			...(this.settings.browser.allowAiControl && this.browserHost ? [...BROWSER_TOOL_NAMES] : []),
+			...getActiveDesktopToolNames(this.settings.capabilities),
+			...PERSONAL_SKILL_TOOL_NAMES,
+			...MEMO_TOOL_NAMES,
+			...(this.settings.webSearch?.mode !== "off" ? WEB_TOOL_NAMES : []),
+		];
 	}
 
 	/**
@@ -591,17 +708,11 @@ export class DesktopAgentService {
 	 * Called whenever capabilities or web search settings change.
 	 */
 	private refreshAllTools(): void {
-		const activeNames = [
-			...this.activeMcpToolNames(),
-			...(this.settings.tokenSaving.enabled ? [...BROWSER_SNAPSHOT_READ_TOOL_NAMES] : []),
-			...getActiveDesktopToolNames(this.settings.capabilities),
-			...PERSONAL_SKILL_TOOL_NAMES,
-			...MEMO_TOOL_NAMES,
-			...(this.settings.webSearch?.mode !== "off" ? WEB_TOOL_NAMES : []),
-		];
+		const activeNames = this.createActiveToolNames();
 		// Settings are global — propagate the refreshed tool set to every live session.
 		const customTools = this.createCustomTools();
 		for (const context of this.sessions.values()) {
+			if (!this.isStandardContext(context)) continue;
 			context.refreshTools(customTools, activeNames);
 		}
 	}
@@ -611,6 +722,7 @@ export class DesktopAgentService {
 		runtimeOptions: {
 			thinkingLevel: DesktopAssistantSettings["thinkingLevel"];
 			sessionStartEvent?: SessionStartEvent;
+			profile?: ConversationRuntimeProfile;
 		},
 	): Promise<AgentSessionRuntime> {
 		const createRuntime: CreateAgentSessionRuntimeFactory = async ({
@@ -619,6 +731,7 @@ export class DesktopAgentService {
 			sessionManager,
 			sessionStartEvent,
 		}) => {
+			const profile = runtimeOptions.profile;
 			const model = await configureDeepSeekDefaults(this.modelRegistry, this.authStorage, this.settings);
 			const skillFiles = resolveDesktopSkillFiles(cwd);
 			const services = await createAgentSessionServices({
@@ -632,26 +745,25 @@ export class DesktopAgentService {
 					appendSystemPrompt: [
 						...(this.settings.mcp.enabled ? [buildMcpAppendPrompt(this.activeMcpToolNames())] : []),
 						...(this.settings.tokenSaving.enabled ? [buildTokenSavingAppendPrompt()] : []),
+						...(this.settings.browser.allowAiControl
+							? [buildBrowserRoutingAppendPrompt(this.settings.browser.defaultBrowser)]
+							: []),
 						buildSystemOperationAppendPrompt(skillFiles.system, this.settings.sandbox.enabled),
+						...(profile?.appendSystemPrompt ?? []),
 					],
 				},
 			});
+			const activeToolNames = profile?.activeToolNames ?? this.createActiveToolNames();
+			const customTools = profile?.customTools ?? this.createCustomTools();
 			const result = await createAgentSessionFromServices({
 				services,
 				sessionManager,
 				sessionStartEvent,
 				model,
 				thinkingLevel: runtimeOptions.thinkingLevel,
-				tools: [
-					...this.activeMcpToolNames(),
-					...(this.settings.tokenSaving.enabled ? [...BROWSER_SNAPSHOT_READ_TOOL_NAMES] : []),
-					...getActiveDesktopToolNames(this.settings.capabilities),
-					...PERSONAL_SKILL_TOOL_NAMES,
-					...MEMO_TOOL_NAMES,
-					...(this.settings.webSearch?.mode !== "off" ? WEB_TOOL_NAMES : []),
-				],
+				tools: activeToolNames,
 				noTools: "builtin",
-				customTools: this.createCustomTools(),
+				customTools,
 			});
 			return {
 				...result,
@@ -670,6 +782,7 @@ export class DesktopAgentService {
 	async initialize(): Promise<void> {
 		// Arm reminders for any memo whose time is still pending; missed ones fire now.
 		this.memoReminderScheduler.rescheduleAll(this.memoRepository.all());
+		this.rescheduleAutomations();
 		// Kick off sandbox initialization asynchronously — it must not block chat.
 		// Skipped under the test runner to keep the suite hermetic (the init probe
 		// spawns PowerShell); SandboxManager tests drive init() directly instead.
@@ -956,6 +1069,303 @@ export class DesktopAgentService {
 			const body = memo.notes ? `\n${memo.notes}` : "";
 			this.context.pushMessage("assistant", `⏰ ${tag}：${memo.title}${body}`);
 		}
+	}
+
+	// Automation flows -------------------------------------------------------
+
+	listAutomations(): AutomationListResponse {
+		return this.automationRepository.list();
+	}
+
+	getAutomation(request: AutomationGetRequest): AutomationFlow | undefined {
+		return this.automationRepository.get(request.id);
+	}
+
+	getAutomationSummary(): AutomationSummary {
+		return this.automationRepository.summary();
+	}
+
+	createAutomation(request: AutomationCreateRequest): AutomationFlow {
+		const flow = this.automationRepository.create(normalizeAutomationMutationRequest(request));
+		this.scheduleAutomation(flow);
+		this.emitAutomationChanged(flow.id);
+		return flow;
+	}
+
+	updateAutomation(request: AutomationUpdateRequest): AutomationFlow {
+		const flow = this.automationRepository.update(normalizeAutomationMutationRequest(request));
+		this.scheduleAutomation(flow);
+		this.emitAutomationChanged(flow.id);
+		return flow;
+	}
+
+	deleteAutomation(request: AutomationDeleteRequest): boolean {
+		this.automationScheduler.cancel(request.id);
+		const deleted = this.automationRepository.delete(request.id);
+		this.emitAutomationChanged(request.id);
+		return deleted;
+	}
+
+	setAutomationEnabled(request: AutomationSetEnabledRequest): AutomationFlow {
+		const flow = this.automationRepository.setEnabled(request.id, request.enabled);
+		this.scheduleAutomation(flow);
+		this.emitAutomationChanged(flow.id);
+		return flow;
+	}
+
+	async runAutomation(request: AutomationRunRequest): Promise<AutomationRunResponse> {
+		const flow = this.automationRepository.get(request.id);
+		if (!flow) throw new Error(`Automation flow not found: ${request.id}`);
+		const run = await this.automationRunner.runAutomation(flow, {
+			trigger: request.trigger ?? request.reason ?? "manual",
+		});
+		const updated = this.automationRepository.get(flow.id) ?? flow;
+		this.scheduleAutomation(updated);
+		return { flow: updated, run };
+	}
+
+	cancelAutomationRun(request: AutomationCancelRunRequest): boolean {
+		return this.automationRunner.cancelRun(request.flowId);
+	}
+
+	async openAutomationEditor(request: AutomationOpenEditorRequest = {}): Promise<void> {
+		if (request.flowId) {
+			const flow = this.automationRepository.get(request.flowId);
+			if (flow) this.automationDraftSession.loadFromFlow(flow);
+		} else {
+			this.automationDraftSession.reset();
+		}
+		// Every editor session starts a brand-new design conversation — never carry one over.
+		await this.resetAutomationDesignContext();
+		await this.options.openFlowEditorWindow?.(request.flowId);
+	}
+
+	/** Dispose the current design session so the next one starts fresh. */
+	private async resetAutomationDesignContext(): Promise<void> {
+		const context = this.automationDesignContext;
+		this.automationDesignContext = undefined;
+		if (!context) return;
+		for (const [key, value] of this.sessions) {
+			if (value === context) this.sessions.delete(key);
+		}
+		await context.dispose({ archiveMode: "detach" });
+	}
+
+	getAutomationDraft(request: AutomationDraftGetRequest = {}): AutomationDraft {
+		if (request.flowId) {
+			const flow = this.automationRepository.get(request.flowId);
+			if (flow) return this.automationDraftSession.getDraft(flow);
+		}
+		return this.automationDraftSession.getDraft();
+	}
+
+	applyAutomationDraft(request: AutomationDraftApplyRequest): AutomationDraft {
+		return this.automationDraftSession.applyOps(request.ops);
+	}
+
+	saveAutomationDraft(request: AutomationDraftSaveRequest = {}): AutomationDraftSaveResponse {
+		const draft = this.automationDraftSession.getDraft();
+		const flowId = request.flowId ?? draft.flowId;
+		const payload = {
+			name: draft.name,
+			description: draft.description,
+			nodes: draft.nodes,
+			edges: draft.edges,
+			trigger: draft.trigger,
+			runPolicy: draft.runPolicy,
+		};
+		const flow = flowId
+			? this.automationRepository.update({ id: flowId, ...payload })
+			: this.automationRepository.create(payload);
+		this.scheduleAutomation(flow);
+		const savedDraft = this.automationDraftSession.markSaved(flow);
+		this.emitAutomationChanged(flow.id);
+		return { flow, draft: savedDraft };
+	}
+
+	async designAutomation(request: AutomationDesignChatRequest): Promise<AutomationDesignChatResponse> {
+		if (request.flowId) {
+			const flow = this.automationRepository.get(request.flowId);
+			if (flow) this.automationDraftSession.getDraft(flow);
+		}
+		const context = await this.ensureAutomationDesignContext();
+		// Remember where this turn begins so we can surface only the reply it produces.
+		const baseMessageCount = context.messages.length;
+		await context.prompt(request.message, "text");
+		const reply = [...context.messages.slice(baseMessageCount)]
+			.reverse()
+			.find((message) => message.role === "assistant")?.text;
+		return {
+			snapshot: this.automationDraftSession.getDraft(),
+			reply,
+			...automationDesignStateFromContext(context),
+		};
+	}
+
+	/**
+	 * Start (or reuse) the design session and return its id + messages. The editor calls this on
+	 * open so it knows the session id up front — letting it stream the very first reply live.
+	 */
+	async startAutomationDesignSession(): Promise<AutomationDesignStateResponse> {
+		const context = await this.ensureAutomationDesignContext();
+		return automationDesignStateFromContext(context);
+	}
+
+	private async ensureAutomationDesignContext(): Promise<ConversationContext> {
+		const cached = this.automationDesignContext;
+		// Reuse only if the cached design session is still alive in the registry —
+		// otherwise it was disposed and the reference is stale.
+		if (cached?.hasRuntime && [...this.sessions.values()].includes(cached)) return cached;
+		this.automationDesignContext = undefined;
+		// The design assistant is a full chat agent (all normal tools) PLUS the flow_* tools,
+		// so it can ask questions, research, and edit the graph just like normal chat.
+		const profile: ConversationRuntimeProfile = {
+			customTools: [
+				...this.createCustomTools(),
+				...createFlowDesignToolDefinitions({
+					getDraft: () => this.automationDraftSession.getDraft(),
+					applyOps: (ops) => this.automationDraftSession.applyOps(ops),
+				}),
+			],
+			activeToolNames: [...this.createActiveToolNames(), ...FLOW_DESIGN_TOOL_NAMES],
+			kind: "automation_design",
+			agentSource: "interactive",
+			appendSystemPrompt: [buildAutomationDesignAppendPrompt()],
+		};
+		const context = new ConversationContext(
+			this.buildContextDeps(),
+			SessionManager.create(this.options.cwd, this.coordinator.paths.sessionsDir),
+			{ profile },
+		);
+		this.registerContext(context, { focus: false });
+		await context.initializeRuntime({
+			sessionStartEvent: { type: "session_start", reason: "new" },
+		});
+		this.automationDesignContext = context;
+		await this.evictIdleSessionsIfNeeded();
+		return context;
+	}
+
+	private async createAutomationConversation(
+		flow: AutomationFlow,
+		run: AutomationRunRecord,
+	): Promise<{
+		sessionId: string;
+		prompt(message: string): Promise<void>;
+		abort(): void;
+		finalize(): Promise<void>;
+	}> {
+		const runHost: AutomationRunToolHost = {
+			flowId: flow.id,
+			runId: run.id,
+			reportProgress: (event) =>
+				this.emitAutomationProgress({
+					...event,
+					flowId: flow.id,
+					runId: run.id,
+					timestamp: new Date().toISOString(),
+				}),
+			finishRun: (status, summary) => {
+				this.automationRepository.recordRunFinish(flow.id, run.id, status, { summary });
+				this.emitAutomationChanged(flow.id);
+			},
+		};
+		const profile: ConversationRuntimeProfile = {
+			customTools: [
+				...this.createCustomTools({ permissionMode: flow.runPolicy.permissionMode }),
+				...createAutomationRunToolDefinitions(runHost),
+			],
+			activeToolNames: [...this.createActiveToolNames(), ...AUTOMATION_RUN_TOOL_NAMES],
+			kind: "automation",
+			agentSource: "interactive",
+			appendSystemPrompt: [buildAutomationRunAppendPrompt(flow, run)],
+		};
+		const context = new ConversationContext(
+			this.buildContextDeps(),
+			SessionManager.create(this.options.cwd, this.coordinator.paths.sessionsDir),
+			{ profile },
+		);
+		const key = this.registerContext(context, { focus: false });
+		await context.initializeRuntime({
+			sessionStartEvent: { type: "session_start", reason: "new" },
+		});
+		await context.archive.setTitle(`Automation: ${flow.name}`, "auto");
+		await this.evictIdleSessionsIfNeeded();
+		return {
+			sessionId: context.sessionId,
+			prompt: (message) => context.prompt(message, "automation"),
+			abort: () => context.abort(),
+			// When the run ends, flush the conversation to disk and drop it from the live
+			// roster: it stays resumable from history (so the timeline is still viewable)
+			// without leaking a runtime per run.
+			finalize: async () => {
+				this.sessions.delete(key);
+				await context.dispose({ archiveMode: "flush" });
+				this.emit({ type: "snapshot", snapshot: this.snapshot() });
+			},
+		};
+	}
+
+	private scheduleAutomation(flow: AutomationFlow): void {
+		const nextRunAt = this.automationScheduler.set(flow);
+		this.automationRepository.setNextRunAt(flow.id, nextRunAt);
+	}
+
+	private rescheduleAutomations(): void {
+		const flows = this.automationRepository.all();
+		const missed = this.automationScheduler.rescheduleAll(flows);
+		for (const { flowId, missedAt } of missed) {
+			const flow = this.automationRepository.get(flowId);
+			if (!flow) continue;
+			this.emit({
+				type: "automation_missed",
+				automation: flow,
+				automationSummary: this.automationRepository.summary(),
+			});
+			this.emitAutomationProgress({
+				flowId,
+				runId: "missed",
+				kind: "log",
+				message: `Scheduled run missed at ${missedAt}; not auto-compensated.`,
+				timestamp: new Date().toISOString(),
+			});
+		}
+		for (const flow of flows) {
+			const nextRun = computeNextRun(flow.trigger, new Date());
+			this.automationRepository.setNextRunAt(flow.id, nextRun?.toISOString());
+		}
+	}
+
+	private onAutomationFire(flowId: string, missed: boolean): void {
+		if (missed) {
+			const flow = this.automationRepository.get(flowId);
+			if (flow) {
+				this.emit({
+					type: "automation_missed",
+					automation: flow,
+					automationSummary: this.automationRepository.summary(),
+				});
+			}
+			return;
+		}
+		const flow = this.automationRepository.get(flowId);
+		if (!flow) return;
+		void this.runAutomation({ id: flowId, trigger: "scheduled" }).catch((error: unknown) => {
+			this.reportError(error);
+		});
+	}
+
+	private emitAutomationChanged(flowId?: string): void {
+		this.emit({
+			type: "automation_changed",
+			automation: flowId ? this.automationRepository.get(flowId) : undefined,
+			automations: this.automationRepository.all(),
+			automationSummary: this.automationRepository.summary(),
+		});
+	}
+
+	private emitAutomationProgress(event: AutomationProgressEvent): void {
+		this.emit({ type: "automation_progress", automationProgress: event });
 	}
 
 	async updateConversationThinking(enabled: boolean, sessionId?: string): Promise<DesktopAssistantSnapshot> {
@@ -1517,6 +1927,7 @@ export class DesktopAgentService {
 			contextUsage: fragment.contextUsage,
 			sandboxStatus: this.sandboxManager.getStatus(),
 			memoSummary: this.memoRepository.summary(),
+			automationSummary: this.automationRepository.summary(),
 		};
 	}
 
@@ -1893,6 +2304,130 @@ export function buildSystemOperationAppendPrompt(skillFile: string, sandboxEnabl
 	return blocks.join("\n");
 }
 
+function buildAutomationDesignAppendPrompt(): string {
+	return [
+		"<automation_design_mode>",
+		"你正在协助用户设计一个【自动化流程图】，供之后按计划重复执行。你的产出是这张流程图本身，而不是现在就去完成这件事。",
+		"用 flow_* 工具读取并修改当前草稿：flow_get 查看现状；flow_add_node / flow_connect 增量构建；flow_update_node / flow_delete_node / flow_disconnect 调整；需要整体重画时用 flow_replace 给出完整图。",
+		"绘制规则：流程通常包含一个 start 起点和一个 end 终点；节点 label 用简短标题，详细做法写进 instruction 字段；分支用 condition 节点并给每条出边加标签。添加节点可以不传坐标，系统会自动摆放，不会打乱已有节点。",
+		"主动沟通：当目标、触发频率、关键步骤或成功判定不清楚时，先用自然语言向用户提问澄清，再动手画；每次改动流程图后用一两句话说明你做了什么。",
+		"你可以使用其它所有可用工具（如联网搜索）来理解需求或查资料；但在设计阶段不要真正执行用户想自动化的任务（例如不要现在就去登录、签到、发消息）——那些只在流程运行时才发生。若用户想试运行，请提示其点击编辑器上的『测试』按钮。",
+		"全程使用中文与用户交流。",
+		"</automation_design_mode>",
+	].join("\n");
+}
+
+function automationDesignStateFromContext(
+	context: ConversationContext,
+): AutomationDesignStateResponse & { sessionId: string } {
+	const fragment = context.snapshotFragment();
+	return {
+		sessionId: fragment.sessionId,
+		messages: [...fragment.messages],
+		timeline: [...fragment.timeline],
+		streamingText: fragment.streamingText,
+		streamingThinking: fragment.streamingThinking,
+	};
+}
+
+function buildAutomationRunAppendPrompt(flow: AutomationFlow, run: AutomationRunRecord): string {
+	return [
+		"<automation_run_mode>",
+		`Automation flow id: ${flow.id}`,
+		`Automation run id: ${run.id}`,
+		"Follow the runbook exactly. Report node progress with automation_step, branch choices with automation_branch, and final outcome with automation_finish.",
+		"Do not skip progress tools. If a desktop action requires approval, wait for approval instead of inventing success.",
+		"</automation_run_mode>",
+	].join("\n");
+}
+
+function normalizeAutomationMutationRequest<T extends AutomationCreateRequest | AutomationUpdateRequest>(
+	request: T,
+): T {
+	const draftGraph = draftToFlowGraph(request.draft);
+	return {
+		...request,
+		name: request.name ?? request.title,
+		nodes: request.nodes ?? draftGraph.nodes,
+		edges: request.edges ?? draftGraph.edges,
+	};
+}
+
+function draftToFlowGraph(draft: unknown): { nodes?: FlowNode[]; edges?: FlowEdge[] } {
+	if (!draft || typeof draft !== "object") return {};
+	const raw = draft as Record<string, unknown>;
+	const nodes = Array.isArray(raw.nodes)
+		? raw.nodes.map(draftNodeToFlowNode).filter((node): node is FlowNode => node !== undefined)
+		: undefined;
+	const edges = Array.isArray(raw.edges)
+		? raw.edges.map(draftEdgeToFlowEdge).filter((edge): edge is FlowEdge => edge !== undefined)
+		: undefined;
+	return { nodes, edges };
+}
+
+function draftNodeToFlowNode(value: unknown): FlowNode | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	const data = raw.data && typeof raw.data === "object" ? (raw.data as Record<string, unknown>) : {};
+	const position = raw.position && typeof raw.position === "object" ? (raw.position as Record<string, unknown>) : {};
+	const id = typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : undefined;
+	if (!id) return undefined;
+	const rawKind = typeof data.kind === "string" ? data.kind : typeof raw.type === "string" ? raw.type : "";
+	const kind = normalizeDraftNodeKind(rawKind);
+	const label = typeof data.label === "string" && data.label.trim() ? data.label : id;
+	const instruction =
+		typeof data.description === "string"
+			? data.description
+			: typeof data.instruction === "string"
+				? data.instruction
+				: undefined;
+	return {
+		id,
+		kind,
+		label,
+		instruction,
+		position: {
+			x: typeof position.x === "number" ? position.x : 0,
+			y: typeof position.y === "number" ? position.y : 0,
+		},
+	};
+}
+
+function draftEdgeToFlowEdge(value: unknown): FlowEdge | undefined {
+	if (!value || typeof value !== "object") return undefined;
+	const raw = value as Record<string, unknown>;
+	const source = typeof raw.source === "string" ? raw.source : undefined;
+	const target = typeof raw.target === "string" ? raw.target : undefined;
+	if (!source || !target) return undefined;
+	return {
+		id: typeof raw.id === "string" && raw.id.trim() ? raw.id.trim() : `${source}-${target}`,
+		source,
+		target,
+		label: typeof raw.label === "string" ? raw.label : undefined,
+	};
+}
+
+function normalizeDraftNodeKind(value: string): FlowNode["kind"] {
+	switch (value) {
+		case "input":
+		case "trigger":
+		case "start":
+			return "start";
+		case "output":
+		case "finish":
+		case "end":
+			return "end";
+		case "condition":
+			return "condition";
+		case "loop":
+			return "loop";
+		case "wait":
+			return "wait";
+		default:
+			return "task";
+	}
+}
+
 export function detectMusicControlMcpTools(activeToolNames: string[]): string[] {
 	const signature = /play_song|play_personal_fm|play_daily_recommend|play_playlist|like_song|^mcp_ncm_/i;
 	return activeToolNames.filter((name) => name.startsWith("mcp_") && signature.test(name));
@@ -2100,6 +2635,7 @@ export function normalizeSettings(update: Partial<DesktopAssistantSettings> | un
 			googleCx: update?.webSearch?.googleCx,
 			searxngUrl: update?.webSearch?.searxngUrl,
 		},
+		browser: normalizeBrowserSettings(update?.browser),
 		mcp: normalizeMcpSettings(update?.mcp),
 		memory: {
 			enabled: update?.memory?.enabled ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory.enabled,
@@ -2132,6 +2668,65 @@ function normalizeToolGates(value: unknown): Record<string, SandboxToolGate> {
 		if (gate === "allow" || gate === "confirm" || gate === "deny") out[name] = gate;
 	}
 	return out;
+}
+
+export function normalizeBrowserSettings(update?: Partial<BrowserSettings>): BrowserSettings {
+	const d = DEFAULT_DESKTOP_ASSISTANT_SETTINGS.browser;
+	return {
+		defaultBrowser: normalizeBrowserTarget(update?.defaultBrowser),
+		allowAiControl: update?.allowAiControl ?? d.allowAiControl,
+		homeUrl: normalizeBrowserHomeUrl(update?.homeUrl, d.homeUrl),
+		maxTabs: Math.round(clampNumber(update?.maxTabs, d.maxTabs, 1, 32)),
+		persistStorage: true,
+		searchTemplate: normalizeSearchTemplate(update?.searchTemplate, d.searchTemplate),
+		shortcuts: normalizeBrowserShortcuts(update?.shortcuts, d.shortcuts),
+	};
+}
+
+const MAX_BROWSER_SHORTCUTS = 24;
+
+function normalizeBrowserShortcuts(value: unknown, fallback: BrowserShortcut[]): BrowserShortcut[] {
+	if (value === undefined) return fallback.map((item) => ({ ...item }));
+	if (!Array.isArray(value)) return [];
+	const seenIds = new Set<string>();
+	const result: BrowserShortcut[] = [];
+	for (const raw of value) {
+		if (!raw || typeof raw !== "object") continue;
+		const candidate = raw as Partial<BrowserShortcut>;
+		const label = typeof candidate.label === "string" ? candidate.label.trim() : "";
+		const rawUrl = typeof candidate.url === "string" ? candidate.url.trim() : "";
+		if (!label || !rawUrl) continue;
+		let id = typeof candidate.id === "string" ? candidate.id.trim() : "";
+		if (!id || seenIds.has(id)) id = randomUUID();
+		seenIds.add(id);
+		const iconUrl =
+			typeof candidate.iconUrl === "string" && candidate.iconUrl.trim() ? candidate.iconUrl.trim() : undefined;
+		result.push({ id, label, url: normalizeBrowserHomeUrl(rawUrl, rawUrl), iconUrl });
+		if (result.length >= MAX_BROWSER_SHORTCUTS) break;
+	}
+	return result;
+}
+
+function normalizeSearchTemplate(value: unknown, fallback: string): string {
+	if (typeof value !== "string") return fallback;
+	const trimmed = value.trim();
+	if (!trimmed.includes("%s")) return fallback;
+	if (!/^https?:\/\//i.test(trimmed)) return fallback;
+	return trimmed;
+}
+
+function normalizeBrowserTarget(value: unknown): BrowserTarget {
+	if (value === "built_in" || value === "chrome" || value === "edge") return value;
+	return DEFAULT_DESKTOP_ASSISTANT_SETTINGS.browser.defaultBrowser;
+}
+
+function normalizeBrowserHomeUrl(value: unknown, fallback: string): string {
+	if (typeof value !== "string") return fallback;
+	const trimmed = value.trim();
+	if (!trimmed) return fallback;
+	if (trimmed === "about:blank") return trimmed;
+	if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) return trimmed;
+	return `https://${trimmed}`;
 }
 
 export function normalizeSandboxSettings(update?: Partial<SandboxSettings>): SandboxSettings {

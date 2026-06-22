@@ -8,7 +8,8 @@
 	"scripts": {
 		"clean": "shx rm -rf dist renderer-dist",
 		"build:preload": "node -e \"require('esbuild').buildSync({entryPoints:['src/main/preload.ts'],bundle:true,format:'cjs',outfile:'dist/main/main/preload.cjs',external:['electron'],logLevel:'info'})\"",
-		"build": "tsgo -p tsconfig.build.json && npm run build:preload && vite build",
+		"typecheck:renderer": "tsgo -p tsconfig.renderer.json --noEmit",
+		"build": "tsgo -p tsconfig.build.json && npm run typecheck:renderer && npm run build:preload && vite build",
 		"dev": "vite --host 127.0.0.1",
 		"electron": "electron --no-deprecation .",
 		"fetch:wake": "node scripts/fetch-oww-runtime.mjs",
@@ -20,6 +21,7 @@
 		"@earendil-works/pi-coding-agent": "^0.78.0",
 		"@modelcontextprotocol/sdk": "1.29.0",
 		"@nut-tree-fork/nut-js": "4.2.6",
+		"@xyflow/react": "12.11.0",
 		"electron": "42.3.0",
 		"lucide-react": "1.17.0",
 		"node-window-manager": "2.2.4",

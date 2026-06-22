@@ -1,7 +1,49 @@
 import type {
 	AbortRequest,
 	ApiKeyUpdateRequest,
+	AutomationCancelRunRequest,
+	AutomationCreateRequest,
+	AutomationDeleteRequest,
+	AutomationDesignChatRequest,
+	AutomationDesignChatResponse,
+	AutomationDesignStateResponse,
+	AutomationDraft,
+	AutomationDraftApplyRequest,
+	AutomationDraftGetRequest,
+	AutomationDraftSaveRequest,
+	AutomationDraftSaveResponse,
+	AutomationFlow,
+	AutomationGetRequest,
+	AutomationListResponse,
+	AutomationPermissionMode,
+	AutomationRiskLevel,
+	AutomationRunRecord,
+	AutomationRunRequest,
+	AutomationRunResponse,
+	AutomationSetEnabledRequest,
+	AutomationStatus,
+	AutomationUpdateRequest,
 	AppLaunchCacheView,
+	BrowserClearStorageRequest,
+	BrowserClearStorageResponse,
+	BrowserCookieRequest,
+	BrowserCookieView,
+	BrowserElementActionRequest,
+	BrowserElementSnapshot,
+	BrowserKeyRequest,
+	BrowserNavigateRequest,
+	BrowserNativeStatus,
+	BrowserPageSnapshot,
+	BrowserQueryElementsRequest,
+	BrowserReadPageRequest,
+	BrowserScreenshotRequest,
+	BrowserScreenshotResponse,
+	BrowserScrollRequest,
+	BrowserSetBoundsRequest,
+	BrowserTabRequest,
+	BrowserVirtualMouseRequest,
+	BuiltInBrowserEvent,
+	BuiltInBrowserStatus,
 	ClearConversationHistoryResponse,
 	CloseSessionRequest,
 	ConfirmationUpdateRequest,
@@ -41,6 +83,8 @@ import type {
 	MemoSetReminderRequest,
 	MemoSnoozeRequest,
 	MemoUpdateRequest,
+	OpenBuiltInBrowserRequest,
+	OpenUrlInDefaultBrowserRequest,
 	PersonalSkillArchiveRequest,
 	PersonalSkillFileView,
 	PersonalSkillListResponse,
@@ -88,6 +132,28 @@ import type {
 	WindowMode,
 } from "../../src/shared/types.ts";
 
+export type {
+	AutomationCancelRunRequest,
+	AutomationCreateRequest,
+	AutomationDeleteRequest,
+	AutomationDesignChatRequest,
+	AutomationDesignChatResponse,
+	AutomationDesignStateResponse,
+	AutomationDraft,
+	AutomationDraftApplyRequest,
+	AutomationDraftGetRequest,
+	AutomationDraftSaveRequest,
+	AutomationDraftSaveResponse,
+	AutomationFlow,
+	AutomationListResponse,
+	AutomationRunRequest,
+	AutomationRunRecord,
+	AutomationRunResponse,
+	AutomationSetEnabledRequest,
+	AutomationUpdateRequest,
+};
+export type { AutomationPermissionMode, AutomationRiskLevel, AutomationStatus };
+
 interface DesktopAssistantApi {
 	getSnapshot(): Promise<DesktopAssistantSnapshot>;
 	newConversation(): Promise<DesktopAssistantSnapshot>;
@@ -133,6 +199,20 @@ interface DesktopAssistantApi {
 	deleteGlobalMemory(request: GlobalMemoryDeleteRequest): Promise<GlobalMemoryListResponse>;
 	clearGlobalMemories(): Promise<GlobalMemoryClearResponse>;
 	updateGlobalMemory(request: GlobalMemoryUpdateRequest): Promise<GlobalMemoryEntry | undefined>;
+	automationList(): Promise<AutomationListResponse>;
+	automationGet(request: AutomationGetRequest): Promise<AutomationFlow | undefined>;
+	automationCreate(request: AutomationCreateRequest): Promise<AutomationFlow>;
+	automationUpdate(request: AutomationUpdateRequest): Promise<AutomationFlow>;
+	automationDelete(request: AutomationDeleteRequest): Promise<AutomationListResponse>;
+	automationSetEnabled(request: AutomationSetEnabledRequest): Promise<AutomationFlow>;
+	automationRun(request: AutomationRunRequest): Promise<AutomationRunResponse>;
+	automationCancelRun(request: AutomationCancelRunRequest): Promise<AutomationRunRecord | undefined>;
+	automationOpenEditor(request?: { flowId?: string; id?: string }): Promise<void>;
+	automationDraftGet(request?: AutomationDraftGetRequest): Promise<AutomationDraft>;
+	automationDraftApply(request: AutomationDraftApplyRequest): Promise<AutomationDraft>;
+	automationDraftSave(request?: AutomationDraftSaveRequest): Promise<AutomationDraftSaveResponse>;
+	automationDesignChat(request: AutomationDesignChatRequest): Promise<AutomationDesignChatResponse>;
+	automationDesignState(): Promise<AutomationDesignStateResponse>;
 	listMemos(request?: MemoListRequest): Promise<MemoListResponse>;
 	createMemo(request: MemoCreateRequest): Promise<MemoItem>;
 	updateMemo(request: MemoUpdateRequest): Promise<MemoItem>;
@@ -144,6 +224,29 @@ interface DesktopAssistantApi {
 	clearAppLaunchCache(): Promise<AppLaunchCacheView>;
 	deleteAppLaunchCacheEntry(request: DeleteAppLaunchCacheEntryRequest): Promise<AppLaunchCacheView>;
 	openAppLaunchCacheWindow(): Promise<void>;
+	openUrlInDefaultBrowser(request: OpenUrlInDefaultBrowserRequest): Promise<unknown>;
+	openBuiltInBrowser(request?: OpenBuiltInBrowserRequest): Promise<BuiltInBrowserStatus>;
+	getBuiltInBrowserStatus(): Promise<BuiltInBrowserStatus>;
+	builtInBrowserNavigate(request: BrowserNavigateRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserNewTab(request?: { url?: string }): Promise<BuiltInBrowserStatus>;
+	builtInBrowserSwitchTab(request: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserCloseTab(request: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserGoBack(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserGoForward(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserReload(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserStop(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserSetContentBounds(request: BrowserSetBoundsRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserClearStorage(request: BrowserClearStorageRequest): Promise<BrowserClearStorageResponse>;
+	builtInBrowserGetNativeStatus(): Promise<BrowserNativeStatus>;
+	builtInBrowserReadPage(request?: BrowserReadPageRequest): Promise<BrowserPageSnapshot>;
+	builtInBrowserQueryElements(request?: BrowserQueryElementsRequest): Promise<BrowserElementSnapshot[]>;
+	builtInBrowserClick(request: BrowserElementActionRequest): Promise<BrowserPageSnapshot>;
+	builtInBrowserTypeText(request: BrowserElementActionRequest): Promise<BrowserPageSnapshot>;
+	builtInBrowserPressKey(request: BrowserKeyRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserScroll(request?: BrowserScrollRequest): Promise<BrowserPageSnapshot>;
+	builtInBrowserScreenshot(request?: BrowserScreenshotRequest): Promise<BrowserScreenshotResponse>;
+	builtInBrowserGetCookies(request?: BrowserCookieRequest): Promise<BrowserCookieView[]>;
+	builtInBrowserVirtualMouse(request: BrowserVirtualMouseRequest): Promise<BuiltInBrowserStatus>;
 	getSandboxStatus(): Promise<SandboxStatus>;
 	initSandbox(): Promise<SandboxStatus>;
 	resetSandbox(): Promise<SandboxStatus>;
@@ -173,6 +276,7 @@ interface DesktopAssistantApi {
 	onWakeKwsWake(listener: (event: WakeKwsWakeEvent) => void): () => void;
 	onEvent(listener: (event: DesktopAssistantEvent) => void): () => void;
 	onLogEvent(listener: (entry: LogEntry) => void): () => void;
+	onBuiltInBrowserEvent(listener: (event: BuiltInBrowserEvent) => void): () => void;
 	onPetDebugEvent(listener: (entry: PetDebugStateEvent) => void): () => void;
 	getPathForFile(file: File): string;
 	minimizeWindow(): void;

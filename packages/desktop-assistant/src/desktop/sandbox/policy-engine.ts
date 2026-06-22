@@ -1,5 +1,6 @@
 import type {
 	AutomationPermissionMode,
+	AutomationRiskLevel,
 	SandboxLane,
 	SandboxNetworkSettings,
 	SandboxPhase,
@@ -35,6 +36,8 @@ export interface ActionContext {
 	url?: string;
 	/** Free text used for risk classification when no command is present. */
 	riskText?: string;
+	/** Optional per-run override: risks at or below this level are auto-approved. */
+	autoApproveMaxRisk?: AutomationRiskLevel;
 }
 
 /** Canonicalized, resolved roots + live phase the engine needs at decision time. */
@@ -270,6 +273,10 @@ export function evaluateAction(ctx: ActionContext, settings: SandboxSettings, st
 }
 
 function realBaselineEffect(ctx: ActionContext): "allow" | "confirm" | "deny" {
+	if (ctx.autoApproveMaxRisk) {
+		const risk = classifyAutomationRisk(ctx.riskText ?? ctx.command ?? `${ctx.kind} ${ctx.toolName}`);
+		return riskRank(risk) <= riskRank(ctx.autoApproveMaxRisk) ? "allow" : "confirm";
+	}
 	switch (ctx.permissionMode) {
 		case "full_access":
 			return "allow";
@@ -281,6 +288,17 @@ function realBaselineEffect(ctx: ActionContext): "allow" | "confirm" | "deny" {
 		}
 		default:
 			return "confirm";
+	}
+}
+
+function riskRank(risk: AutomationRiskLevel): number {
+	switch (risk) {
+		case "low":
+			return 0;
+		case "medium":
+			return 1;
+		case "high":
+			return 2;
 	}
 }
 

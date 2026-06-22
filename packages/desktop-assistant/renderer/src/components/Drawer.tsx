@@ -6,6 +6,7 @@ import {
 	Loader2,
 	Settings as SettingsIcon,
 	Trash2,
+	Workflow,
 	X,
 } from "lucide-react";
 import type { MemoSummary, SessionRunStatus, SessionSummary } from "../../../src/shared/types.ts";
@@ -67,6 +68,7 @@ export function Drawer({
 	activeRoute,
 	memoSummary,
 	onOpenHome,
+	onOpenAutomation,
 	onOpenMemo,
 	onOpenSettings,
 	activeId,
@@ -85,6 +87,7 @@ export function Drawer({
 	activeRoute?: Route;
 	memoSummary?: MemoSummary;
 	onOpenHome: () => void;
+	onOpenAutomation: () => void;
 	onOpenMemo: () => void;
 	onOpenSettings: () => void;
 	activeId: string | null;
@@ -132,6 +135,15 @@ export function Drawer({
 				>
 					<Home size={15} />
 					<span>首页</span>
+				</button>
+
+				<button
+					className={`drawer-nav ${activeRoute === "automation" ? "active" : ""}`}
+					type="button"
+					onClick={onOpenAutomation}
+				>
+					<Workflow size={15} />
+					<span>自动化</span>
 				</button>
 
 				<button

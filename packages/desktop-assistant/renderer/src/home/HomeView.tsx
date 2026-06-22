@@ -142,6 +142,7 @@ export function HomeView({
 
 	const topRef = useRef<HTMLDivElement>(null);
 	const scrollRef = useRef<HTMLDivElement>(null);
+	const textareaRef = useRef<HTMLTextAreaElement>(null);
 
 	// Measure the quick-entry block so the dissolve mask ends exactly at its bottom.
 	useLayoutEffect(() => {
@@ -161,6 +162,22 @@ export function HomeView({
 		const el = scrollRef.current;
 		if (el) el.scrollTop = el.scrollHeight;
 	}, [hasConvo, snapshot.messages.length, snapshot.streamingText]);
+
+	useLayoutEffect(() => {
+		const el = textareaRef.current;
+		if (!el) return;
+		const MAX_ROWS = 5;
+		el.style.height = "auto";
+		const style = window.getComputedStyle(el);
+		const lineHeight = parseFloat(style.lineHeight) || 20;
+		const paddingTop = parseFloat(style.paddingTop) || 0;
+		const paddingBottom = parseFloat(style.paddingBottom) || 0;
+		const borderTop = parseFloat(style.borderTopWidth) || 0;
+		const borderBottom = parseFloat(style.borderBottomWidth) || 0;
+		const maxHeight = lineHeight * MAX_ROWS + paddingTop + paddingBottom + borderTop + borderBottom;
+		el.style.height = `${Math.min(el.scrollHeight, maxHeight)}px`;
+		el.style.overflowY = el.scrollHeight > maxHeight ? "auto" : "hidden";
+	}, [text]);
 
 	// Once the inline thread is gone (expanded to chat, cleared, or a history session
 	// took focus), drop the expanding state so the launcher is never left covered.
@@ -377,6 +394,7 @@ export function HomeView({
 					) : null}
 					<div className="home-composer-row">
 						<textarea
+							ref={textareaRef}
 							value={text}
 							placeholder="问我任何事，回车开始新对话…"
 							rows={1}

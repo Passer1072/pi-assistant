@@ -37,7 +37,11 @@ import "./styles.css";
 
 const WINDOW_MODE = new URLSearchParams(window.location.search).get("window");
 const loadHomeView = () => import("./home/HomeView.tsx").then((module) => ({ default: module.HomeView }));
+const loadAutomationView = () =>
+	import("./automation/AutomationView.tsx").then((module) => ({ default: module.AutomationView }));
 const loadMemoView = () => import("./memo/MemoView.tsx").then((module) => ({ default: module.MemoView }));
+const loadFlowEditorView = () =>
+	import("./automation/FlowEditorView.tsx").then((module) => ({ default: module.FlowEditorView }));
 const loadSettingsView = () =>
 	import("./settings/SettingsView.tsx").then((module) => ({ default: module.SettingsView }));
 const loadMcpManagerView = () => import("./mcp/McpManagerView.tsx").then((module) => ({ default: module.McpManagerView }));
@@ -51,14 +55,19 @@ const loadPersonalSkillManagerView = () =>
 	}));
 const loadSandboxSettingsView = () =>
 	import("./settings/SandboxSettingsView.tsx").then((module) => ({ default: module.SandboxSettingsView }));
+const loadBuiltInBrowserView = () =>
+	import("./browser/BuiltInBrowserView.tsx").then((module) => ({ default: module.BuiltInBrowserView }));
 const HomeView = lazy(loadHomeView);
+const AutomationView = lazy(loadAutomationView);
 const MemoView = lazy(loadMemoView);
+const FlowEditorView = lazy(loadFlowEditorView);
 const SettingsView = lazy(loadSettingsView);
 const McpManagerView = lazy(loadMcpManagerView);
 const ToolsetManagerView = lazy(loadToolsetManagerView);
 const PluginManagerView = lazy(loadPluginManagerView);
 const PersonalSkillManagerView = lazy(loadPersonalSkillManagerView);
 const SandboxSettingsView = lazy(loadSandboxSettingsView);
+const BuiltInBrowserView = lazy(loadBuiltInBrowserView);
 
 type LiveSnapshotUpdate =
 	| DesktopAssistantSnapshot
@@ -120,7 +129,16 @@ function App() {
 	const isPluginWindow = WINDOW_MODE === "plugins";
 	const isPersonalSkillWindow = WINDOW_MODE === "personal-skills";
 	const isSandboxWindow = WINDOW_MODE === "sandbox";
-	const isUtilityWindow = isMcpWindow || isToolsetWindow || isPluginWindow || isPersonalSkillWindow || isSandboxWindow;
+	const isAutomationEditorWindow = WINDOW_MODE === "automation-editor";
+	const isBrowserWindow = WINDOW_MODE === "browser";
+	const isUtilityWindow =
+		isMcpWindow ||
+		isToolsetWindow ||
+		isPluginWindow ||
+		isPersonalSkillWindow ||
+		isSandboxWindow ||
+		isAutomationEditorWindow ||
+		isBrowserWindow;
 	const viewingHistory = resumedConversationSessionId !== undefined && resumedConversationSessionId === liveSnapshot?.sessionId;
 
 	const setLiveSnapshot = (update: LiveSnapshotUpdate): void => {
@@ -303,6 +321,13 @@ function App() {
 				const heading = memo.reminderMissed ? "错过的提醒" : "待办提醒";
 				pushToast({ tone: "awaiting", title: heading, message: memo.title }, 9000);
 				petEngineRef.current?.speak(`⏰ ${memo.title}`);
+			}
+			if ((event.type === "automation_changed" || event.type === "automation_missed") && event.automationSummary) {
+				const automationSummary = event.automationSummary;
+				setLiveSnapshot((current) => (current ? { ...current, automationSummary } : current));
+			}
+			if (event.type === "automation_missed" && event.automation) {
+				pushToast({ tone: "awaiting", title: "错过的自动化", message: event.automation.name }, 9000);
 			}
 		});
 		return () => {
@@ -915,9 +940,17 @@ function App() {
 						windowed
 					/>
 				</Suspense>
+			) : isAutomationEditorWindow ? (
+				<Suspense fallback={<StartupFallback label="加载流程图编辑器" />}>
+					<FlowEditorView />
+				</Suspense>
+			) : isBrowserWindow ? (
+				<Suspense fallback={<StartupFallback label="加载内置浏览器" />}>
+					<BuiltInBrowserView />
+				</Suspense>
 			) : (
 				<div className="app-main">
-					{/* Chat is the always-mounted base layer; home/memo/settings slide over it. */}
+					{/* Chat is the always-mounted base layer; home/automation/memo/settings slide over it. */}
 					<div className="page-base">
 						<ChatView
 							snapshot={liveSnapshot}
@@ -985,6 +1018,25 @@ function App() {
 						) : null}
 					</div>
 
+					<div className={`overlay-page overlay-right overlay-automation ${route === "automation" ? "active" : ""}`}>
+						{mountedRoutes.automation ? (
+							<Suspense fallback={<StartupFallback label="加载自动化" />}>
+								<AutomationView
+									snapshot={liveSnapshot}
+									onBack={closeOverlay}
+									onMenu={() => {
+										setDrawerOpen(true);
+										void refreshHistory();
+									}}
+									wakeModels={wakeModels}
+									windowMode={windowMode}
+									onToggleWindowMode={toggleWindowMode}
+									onOpenSession={selectSession}
+								/>
+							</Suspense>
+						) : null}
+					</div>
+
 					<div className={`overlay-page overlay-right overlay-memo ${route === "memo" ? "active" : ""}`}>
 						{mountedRoutes.memo ? (
 							<Suspense fallback={<StartupFallback label="加载备忘录" />}>
@@ -1044,6 +1096,7 @@ function App() {
 						setDrawerOpen(false);
 						setRoute("home");
 					}}
+					onOpenAutomation={() => openOverlay("automation")}
 					onOpenMemo={() => openOverlay("memo")}
 					onOpenSettings={() => openOverlay("settings")}
 					activeId={liveSnapshot.sessionId}

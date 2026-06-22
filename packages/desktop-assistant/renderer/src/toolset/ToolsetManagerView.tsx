@@ -34,9 +34,11 @@ export function ToolsetManagerView({
 		setStatusText("");
 		try {
 			const next = await window.desktopAssistant.updateSettings({
-				capabilities: {
-					...capabilities,
-					[id]: { ...capabilities[id], ...update },
+				settings: {
+					capabilities: {
+						...capabilities,
+						[id]: { ...capabilities[id], ...update },
+					},
 				},
 			});
 			onSnapshot(next);

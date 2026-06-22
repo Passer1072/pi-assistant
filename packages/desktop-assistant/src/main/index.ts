@@ -1,8 +1,16 @@
+import { randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { app, BrowserWindow, ipcMain } from "electron";
+import {
+	app,
+	BrowserWindow,
+	type Event as ElectronEvent,
+	ipcMain,
+	type RenderProcessGoneDetails,
+	type WebContentsConsoleMessageEventParams,
+} from "electron";
 import { DesktopAgentService } from "../agent/desktop-agent-service.ts";
 import { WindowsDesktopAutomationHost } from "../desktop/automation-host.ts";
 import { createSerializedDesktopHost, DesktopActionScheduler } from "../desktop/desktop-action-scheduler.ts";
@@ -11,6 +19,7 @@ import type { AppLaunchCacheView } from "../shared/types.ts";
 import { DESKTOP_ASSISTANT_CHANNELS } from "../shared/types.ts";
 import { KwsService } from "../voice/kws-service.ts";
 import { VoiceBridge } from "../voice/voice-bridge.ts";
+import { BuiltInBrowserController } from "./built-in-browser-controller.ts";
 import { registerDesktopAssistantIpc } from "./ipc.ts";
 import { LogStore } from "./log-store.ts";
 import { WakeWordModelStore } from "./wake-word-model-store.ts";
@@ -23,9 +32,118 @@ let mcpManagerWindow: BrowserWindow | undefined;
 let toolsetManagerWindow: BrowserWindow | undefined;
 let pluginManagerWindow: BrowserWindow | undefined;
 let personalSkillManagerWindow: BrowserWindow | undefined;
+let automationEditorWindow: BrowserWindow | undefined;
 let serviceLogWindow: BrowserWindow | undefined;
 let sandboxSettingsWindow: BrowserWindow | undefined;
 let logStore: LogStore;
+
+type DiagnosticLevel = "debug" | "info" | "warning" | "error";
+
+const legacyConsoleLevels: DiagnosticLevel[] = ["debug", "info", "warning", "error"];
+
+let processDiagnosticsInstalled = false;
+
+function addWindow(window: BrowserWindow, label: string): void {
+	windows.add(window);
+	attachWindowDiagnostics(window, label);
+}
+
+function attachWindowDiagnostics(window: BrowserWindow, label: string): void {
+	const { webContents } = window;
+	webContents.on("console-message", (event, legacyLevel, legacyMessage, legacyLine, legacySourceId) => {
+		const details = event as ElectronEvent<WebContentsConsoleMessageEventParams>;
+		const level = details.level ?? legacyConsoleLevels[legacyLevel] ?? "info";
+		const message = details.message || legacyMessage || "(empty console message)";
+		const source = details.sourceId || legacySourceId || webContents.getURL();
+		const lineNumber = details.lineNumber || legacyLine;
+		const detail = source ? `${source}${lineNumber ? `:${lineNumber}` : ""}` : undefined;
+		writeDiagnostic(level, `renderer:${label}`, message, detail);
+	});
+	webContents.on("preload-error", (_event, failedPreloadPath, error) => {
+		writeDiagnostic("error", `renderer:${label}`, `Preload failed: ${failedPreloadPath}`, error);
+	});
+	webContents.on("did-fail-load", (_event, errorCode, errorDescription, validatedURL, isMainFrame) => {
+		if (errorCode === -3) return;
+		writeDiagnostic(
+			"error",
+			`renderer:${label}`,
+			`Load failed (${errorCode}): ${errorDescription}`,
+			`${validatedURL || webContents.getURL()}${isMainFrame ? " main-frame" : ""}`,
+		);
+	});
+	webContents.on("render-process-gone", (_event, details) => {
+		writeRenderProcessGoneDiagnostic(label, details);
+	});
+	webContents.on("unresponsive", () => {
+		writeDiagnostic("warning", `renderer:${label}`, "Window became unresponsive", webContents.getURL());
+	});
+	webContents.on("responsive", () => {
+		writeDiagnostic("info", `renderer:${label}`, "Window became responsive", webContents.getURL());
+	});
+}
+
+function writeRenderProcessGoneDiagnostic(label: string, details: RenderProcessGoneDetails): void {
+	const level: DiagnosticLevel = details.reason === "clean-exit" ? "info" : "error";
+	writeDiagnostic(
+		level,
+		`renderer:${label}`,
+		`Render process gone: ${details.reason}`,
+		`exitCode=${details.exitCode}`,
+	);
+}
+
+function installProcessDiagnostics(): void {
+	if (processDiagnosticsInstalled) return;
+	processDiagnosticsInstalled = true;
+	process.on("warning", (warning) => {
+		writeDiagnostic("warning", "main", `Process warning: ${warning.name}`, warning);
+	});
+	process.on("unhandledRejection", (reason) => {
+		writeDiagnostic("error", "main", "Unhandled promise rejection", reason);
+	});
+	process.on("uncaughtExceptionMonitor", (error) => {
+		writeDiagnostic("error", "main", "Uncaught exception", error);
+	});
+}
+
+function writeDiagnostic(level: DiagnosticLevel, scope: string, title: string, detail?: unknown): void {
+	const normalizedDetail = normalizeDiagnosticDetail(detail);
+	const line = `[${new Date().toISOString()}] [${level.toUpperCase()}] [${scope}] ${title}`;
+	if (normalizedDetail) {
+		if (level === "error" || level === "warning") {
+			console.error(`${line}\n${normalizedDetail}`);
+		} else {
+			console.log(`${line}\n${normalizedDetail}`);
+		}
+	} else if (level === "error" || level === "warning") {
+		console.error(line);
+	} else {
+		console.log(line);
+	}
+	pushDiagnosticLog(level, scope, title, normalizedDetail);
+}
+
+function pushDiagnosticLog(level: DiagnosticLevel, scope: string, title: string, detail?: string): void {
+	if (typeof logStore === "undefined") return;
+	logStore.push({
+		id: randomUUID(),
+		ts: Date.now(),
+		cat: level === "error" ? "error" : "diagnostic",
+		title: `[${level}] [${scope}] ${title}`,
+		detail,
+	});
+}
+
+function normalizeDiagnosticDetail(value: unknown): string | undefined {
+	if (value === undefined || value === null || value === "") return undefined;
+	if (value instanceof Error) return value.stack || value.message;
+	if (typeof value === "string") return value;
+	try {
+		return JSON.stringify(value, null, 2);
+	} catch {
+		return String(value);
+	}
+}
 
 async function createMainWindow(): Promise<BrowserWindow> {
 	const window = new BrowserWindow({
@@ -49,7 +167,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
 			preload: preloadPath,
 		},
 	});
-	windows.add(window);
+	addWindow(window, "main");
 	window.on("closed", () => {
 		windows.delete(window);
 	});
@@ -66,9 +184,11 @@ async function createMainWindow(): Promise<BrowserWindow> {
 		saveDir: join(app.getPath("userData"), "conversations"),
 		agentDir: join(app.getPath("userData"), "agent"),
 		memoDir: join(app.getPath("userData"), "memos"),
+		automationDir: join(app.getPath("userData"), "automations"),
 		host: createSerializedDesktopHost(new WindowsDesktopAutomationHost(psService), desktopActionScheduler),
 		openMcpManagerWindow: () => openMcpManagerWindow(),
 		openPersonalSkillManagerWindow: () => openPersonalSkillManagerWindow(),
+		openFlowEditorWindow: (flowId) => openFlowEditorWindow(flowId),
 		sandboxRoot: join(app.getPath("userData"), "sandbox"),
 		sandboxPaths: {
 			home: app.getPath("home"),
@@ -78,11 +198,23 @@ async function createMainWindow(): Promise<BrowserWindow> {
 			appResources: app.getAppPath(),
 		},
 	});
+	const builtInBrowserController = new BuiltInBrowserController({
+		userDataDir: app.getPath("userData"),
+		preloadPath,
+		rendererDistDir: join(__dirname, "../../../renderer-dist"),
+		devServerUrl: process.env.DESKTOP_ASSISTANT_DEV_SERVER_URL,
+		addWindow,
+		getSettings: () => service.snapshot().settings,
+	});
+	// Let the agent's browser_* tools drive the built-in / native browsers, routing through the
+	// user's configured default browser unless a one-time override is requested.
+	service.setBrowserHost(builtInBrowserController.toolHost(() => service.snapshot().settings.browser.defaultBrowser));
 	registerDesktopAssistantIpc({
 		ipcMain,
 		mainWindow: window,
 		getWindows: () => windows,
 		service,
+		builtInBrowserController,
 		voiceBridge: new VoiceBridge(),
 		logStore,
 		wakeWordModelStore: new WakeWordModelStore(join(app.getPath("userData"), "wake-word-models")),
@@ -95,6 +227,7 @@ async function createMainWindow(): Promise<BrowserWindow> {
 		openToolsetManagerWindow: () => openToolsetManagerWindow(),
 		openPluginManagerWindow: () => openPluginManagerWindow(),
 		openPersonalSkillManagerWindow: () => openPersonalSkillManagerWindow(),
+		openFlowEditorWindow: (flowId) => openFlowEditorWindow(flowId),
 		openLogWindow: () => openServiceLogWindow(),
 		openSandboxSettingsWindow: () => openSandboxSettingsWindow(),
 	});
@@ -142,7 +275,7 @@ async function openMcpManagerWindow(): Promise<void> {
 		},
 	});
 	mcpManagerWindow = window;
-	windows.add(window);
+	addWindow(window, "mcp");
 	window.on("closed", () => {
 		windows.delete(window);
 		if (mcpManagerWindow === window) mcpManagerWindow = undefined;
@@ -190,7 +323,7 @@ async function openToolsetManagerWindow(): Promise<void> {
 		},
 	});
 	toolsetManagerWindow = window;
-	windows.add(window);
+	addWindow(window, "toolset");
 	window.on("closed", () => {
 		windows.delete(window);
 		if (toolsetManagerWindow === window) toolsetManagerWindow = undefined;
@@ -238,7 +371,7 @@ async function openPluginManagerWindow(): Promise<void> {
 		},
 	});
 	pluginManagerWindow = window;
-	windows.add(window);
+	addWindow(window, "plugins");
 	window.on("closed", () => {
 		windows.delete(window);
 		if (pluginManagerWindow === window) pluginManagerWindow = undefined;
@@ -286,7 +419,7 @@ async function openPersonalSkillManagerWindow(): Promise<void> {
 		},
 	});
 	personalSkillManagerWindow = window;
-	windows.add(window);
+	addWindow(window, "personal-skills");
 	window.on("closed", () => {
 		windows.delete(window);
 		if (personalSkillManagerWindow === window) personalSkillManagerWindow = undefined;
@@ -305,6 +438,62 @@ async function openPersonalSkillManagerWindow(): Promise<void> {
 				void window.loadURL(fallbackDataUrl(error));
 			});
 	}
+	window.show();
+}
+
+async function openFlowEditorWindow(flowId?: string): Promise<void> {
+	const loadEditor = async (win: BrowserWindow): Promise<void> => {
+		if (process.env.DESKTOP_ASSISTANT_DEV_SERVER_URL) {
+			const url = new URL(process.env.DESKTOP_ASSISTANT_DEV_SERVER_URL);
+			url.searchParams.set("window", "automation-editor");
+			if (flowId) url.searchParams.set("flowId", flowId);
+			await win.loadURL(url.toString()).catch((error: unknown) => {
+				void win.loadURL(fallbackDataUrl(error));
+			});
+		} else {
+			await win
+				.loadFile(join(__dirname, "../../../renderer-dist/index.html"), {
+					query: flowId ? { window: "automation-editor", flowId } : { window: "automation-editor" },
+				})
+				.catch((error: unknown) => {
+					void win.loadURL(fallbackDataUrl(error));
+				});
+		}
+	};
+	if (automationEditorWindow && !automationEditorWindow.isDestroyed()) {
+		automationEditorWindow.focus();
+		// Always reload so the editor re-mounts fresh (blank draft + brand-new design chat).
+		await loadEditor(automationEditorWindow);
+		return;
+	}
+	const window = new BrowserWindow({
+		width: 1200,
+		height: 820,
+		minWidth: 960,
+		minHeight: 640,
+		title: "Automation Editor",
+		frame: false,
+		transparent: false,
+		backgroundColor: "#1c1c20",
+		roundedCorners: true,
+		hasShadow: true,
+		titleBarStyle: "hidden",
+		resizable: true,
+		show: false,
+		webPreferences: {
+			contextIsolation: true,
+			nodeIntegration: false,
+			preload: preloadPath,
+		},
+	});
+	automationEditorWindow = window;
+	addWindow(window, "automation-editor");
+	window.on("closed", () => {
+		windows.delete(window);
+		if (automationEditorWindow === window) automationEditorWindow = undefined;
+	});
+
+	await loadEditor(window);
 	window.show();
 }
 
@@ -335,7 +524,7 @@ async function openAppLaunchCacheWindow(cache: AppLaunchCacheView): Promise<void
 		},
 	});
 	appLaunchCacheWindow = window;
-	windows.add(window);
+	addWindow(window, "app-launch-cache");
 	window.on("closed", () => {
 		windows.delete(window);
 		if (appLaunchCacheWindow === window) appLaunchCacheWindow = undefined;
@@ -370,7 +559,7 @@ async function openSandboxSettingsWindow(): Promise<void> {
 		},
 	});
 	sandboxSettingsWindow = window;
-	windows.add(window);
+	addWindow(window, "sandbox-settings");
 	window.on("closed", () => {
 		windows.delete(window);
 		if (sandboxSettingsWindow === window) sandboxSettingsWindow = undefined;
@@ -418,7 +607,7 @@ async function openServiceLogWindow(): Promise<void> {
 		},
 	});
 	serviceLogWindow = win;
-	windows.add(win);
+	addWindow(win, "service-log");
 
 	// Push new entries to this window in real time.
 	const unsubscribe = logStore.subscribe((entry) => {
@@ -1345,6 +1534,7 @@ async function migrateConversationsToUserData(): Promise<void> {
 }
 
 app.whenReady().then(async () => {
+	installProcessDiagnostics();
 	ensurePreloadFile();
 	logStore = new LogStore(join(app.getPath("userData"), "log"));
 	await createMainWindow();

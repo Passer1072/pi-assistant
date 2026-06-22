@@ -25,12 +25,12 @@ def command_path(name: str) -> str:
 
 
 def run(args: list[str], *, env: dict[str, str] | None = None) -> None:
-    print(f"> {' '.join(args)}")
+    print(f"> {' '.join(args)}", flush=True)
     subprocess.run(args, cwd=ROOT, env=env, check=True)
 
 
 def run_in(path: Path, args: list[str], *, env: dict[str, str] | None = None) -> None:
-    print(f"{path.relative_to(ROOT)}> {' '.join(args)}")
+    print(f"{path.relative_to(ROOT)}> {' '.join(args)}", flush=True)
     subprocess.run(args, cwd=path, env=env, check=True)
 
 
@@ -135,6 +135,10 @@ def main() -> int:
         return 0
 
     env = os.environ.copy()
+    env["ELECTRON_ENABLE_LOGGING"] = "1"
+    env["ELECTRON_ENABLE_STACK_DUMPING"] = "1"
+    env["FORCE_COLOR"] = env.get("FORCE_COLOR", "1")
+    env["PYTHONUNBUFFERED"] = "1"
     vite_process: subprocess.Popen[str] | None = None
 
     try:

@@ -88,6 +88,242 @@ export interface AutoTitleSettings {
 	enabled: boolean;
 }
 
+export type BrowserTarget = "built_in" | "chrome" | "edge";
+export type BrowserStorageClearScope = "cookies" | "cache" | "site_data" | "all";
+
+/** A user-defined quick-launch button on the built-in browser home page. */
+export interface BrowserShortcut {
+	id: string;
+	label: string;
+	url: string;
+	iconUrl?: string;
+}
+
+/** One recently visited page, surfaced as a quick link on the home page. */
+export interface BrowserHistoryEntry {
+	url: string;
+	title: string;
+	faviconUrl?: string;
+	ts: number;
+}
+
+export interface BrowserSettings {
+	defaultBrowser: BrowserTarget;
+	allowAiControl: boolean;
+	homeUrl: string;
+	maxTabs: number;
+	persistStorage: true;
+	/** Quick-launch buttons shown on the built-in browser home page. */
+	shortcuts: BrowserShortcut[];
+	/** Search URL template with a "%s" placeholder for omnibox/home-page searches. */
+	searchTemplate: string;
+}
+
+export interface BrowserTabView {
+	id: string;
+	title: string;
+	url: string;
+	loading: boolean;
+	canGoBack: boolean;
+	canGoForward: boolean;
+	active: boolean;
+	faviconUrl?: string;
+	error?: string;
+	/** True when this tab shows the custom home page instead of a loaded web page. */
+	homePage?: boolean;
+}
+
+export interface BrowserConsoleEntry {
+	id: string;
+	ts: number;
+	level: "debug" | "info" | "warning" | "error";
+	message: string;
+	source?: string;
+	lineNumber?: number;
+	tabId?: string;
+}
+
+export interface BrowserNetworkEntry {
+	id: string;
+	ts: number;
+	tabId?: string;
+	method?: string;
+	url: string;
+	resourceType?: string;
+	statusCode?: number;
+	statusLine?: string;
+	fromCache?: boolean;
+	error?: string;
+}
+
+export interface BrowserNativeAppStatus {
+	target: Extract<BrowserTarget, "chrome" | "edge">;
+	label: string;
+	executablePath?: string;
+	profilePath: string;
+	available: boolean;
+	aiProfileRunning: boolean;
+	lastError?: string;
+}
+
+export interface BrowserNativeStatus {
+	chrome: BrowserNativeAppStatus;
+	edge: BrowserNativeAppStatus;
+}
+
+export interface BuiltInBrowserStatus {
+	tabs: BrowserTabView[];
+	activeTabId?: string;
+	profilePath: string;
+	profileSizeBytes: number;
+	maxTabs: number;
+	aiControlEnabled: boolean;
+	native: BrowserNativeStatus;
+	/** Most-recent distinct sites for the home page "recent" section. */
+	recent: BrowserHistoryEntry[];
+}
+
+export interface OpenBuiltInBrowserRequest {
+	url?: string;
+}
+
+export interface OpenUrlInDefaultBrowserRequest {
+	url: string;
+	browser?: BrowserTarget;
+}
+
+export interface BrowserNavigateRequest {
+	tabId?: string;
+	url: string;
+}
+
+export interface BrowserTabRequest {
+	tabId?: string;
+}
+
+export interface BrowserSetBoundsRequest {
+	x: number;
+	y: number;
+	width: number;
+	height: number;
+}
+
+export interface BrowserClearStorageRequest {
+	scope: BrowserStorageClearScope;
+}
+
+export interface BrowserClearStorageResponse {
+	ok: boolean;
+	scope: BrowserStorageClearScope;
+	profilePath: string;
+	profileSizeBytes: number;
+}
+
+export interface BrowserReadPageRequest {
+	tabId?: string;
+	includeHtml?: boolean;
+	includeSource?: boolean;
+	includeElements?: boolean;
+	includeNetwork?: boolean;
+	includeConsole?: boolean;
+	maxChars?: number;
+}
+
+export interface BrowserElementSnapshot {
+	index: number;
+	tagName: string;
+	text: string;
+	selector: string;
+	visible: boolean;
+	disabled: boolean;
+	checked?: boolean;
+	role?: string;
+	ariaLabel?: string;
+	placeholder?: string;
+	href?: string;
+	value?: string;
+	bounds?: DesktopRectangle;
+}
+
+export interface BrowserPageSnapshot {
+	tab: BrowserTabView;
+	title: string;
+	url: string;
+	text: string;
+	html?: string;
+	source?: string;
+	elements?: BrowserElementSnapshot[];
+	console?: BrowserConsoleEntry[];
+	network?: BrowserNetworkEntry[];
+	truncated: boolean;
+}
+
+export interface BrowserQueryElementsRequest {
+	tabId?: string;
+	selector?: string;
+	text?: string;
+	limit?: number;
+}
+
+export interface BrowserElementActionRequest {
+	tabId?: string;
+	selector?: string;
+	elementIndex?: number;
+	text?: string;
+	clearFirst?: boolean;
+}
+
+export interface BrowserKeyRequest {
+	tabId?: string;
+	key: string;
+}
+
+export interface BrowserScrollRequest {
+	tabId?: string;
+	x?: number;
+	y?: number;
+}
+
+export interface BrowserScreenshotRequest {
+	tabId?: string;
+}
+
+export interface BrowserScreenshotResponse {
+	tabId: string;
+	dataUrl: string;
+	width: number;
+	height: number;
+}
+
+export interface BrowserCookieRequest {
+	tabId?: string;
+	url?: string;
+}
+
+export interface BrowserCookieView {
+	name: string;
+	value: string;
+	domain?: string;
+	path?: string;
+	secure?: boolean;
+	httpOnly?: boolean;
+	session?: boolean;
+	expirationDate?: number;
+}
+
+export interface BrowserVirtualMouseRequest {
+	tabId?: string;
+	x: number;
+	y: number;
+	action?: "move" | "click" | "down" | "up" | "double_click";
+	button?: "left" | "middle" | "right";
+}
+
+export interface BuiltInBrowserEvent {
+	type: "status";
+	status: BuiltInBrowserStatus;
+}
+
 // ── Sandbox ──────────────────────────────────────────────────────────────────
 // A lightweight-but-real isolation layer. "Miscellaneous" intermediate work
 // (document processing, scratch files, exploratory commands) runs confined to a
@@ -472,6 +708,7 @@ export interface DesktopAssistantSettings {
 	permissionMode: AutomationPermissionMode;
 	capabilities: Record<DesktopCapabilityId, DesktopCapabilitySettings>;
 	webSearch: WebSearchSettings;
+	browser: BrowserSettings;
 	mcp: McpSettings;
 	voice: VoiceSettings;
 	memory: MemorySettings;
@@ -895,6 +1132,8 @@ export interface DesktopAssistantSnapshot {
 	sandboxStatus?: SandboxStatus;
 	/** Roll-up of memos/to-dos; drives the sidebar badge and reminder strips. */
 	memoSummary?: MemoSummary;
+	/** Roll-up of automation flows; drives sidebar badges and home summaries. */
+	automationSummary?: AutomationSummary;
 }
 
 export type SessionNotificationKind = "awaiting" | "completed";
@@ -1028,6 +1267,252 @@ export interface MemoSetReminderRequest {
 	reminderAt: string | null;
 }
 
+// Automation flows ----------------------------------------------------------
+
+export type FlowNodeKind = "start" | "task" | "condition" | "loop" | "wait" | "end";
+
+export interface FlowPosition {
+	x: number;
+	y: number;
+}
+
+export interface FlowNodeConfig {
+	waitMs?: number;
+	loopMaxIterations?: number;
+}
+
+export interface FlowNode {
+	id: string;
+	kind: FlowNodeKind;
+	label: string;
+	instruction?: string;
+	config?: FlowNodeConfig;
+	position: FlowPosition;
+}
+
+/**
+ * A flow node whose position may be omitted. Callers (AI design tools) that
+ * don't care where a node lands pass it without a position; the draft session
+ * then places only the missing ones, leaving already-positioned nodes put.
+ */
+export type FlowNodeInput = Omit<FlowNode, "position"> & { position?: FlowPosition };
+
+export interface FlowEdge {
+	id: string;
+	source: string;
+	target: string;
+	label?: string;
+}
+
+export type AutomationTrigger =
+	| { kind: "manual" }
+	| { kind: "once"; at: string }
+	| { kind: "interval"; everyMs: number }
+	| { kind: "daily"; time: string }
+	| { kind: "weekly"; weekdays: number[]; time: string };
+
+export interface AutomationRunPolicy {
+	/** How the run handles actions that cross into the real system — same model as the main chat. */
+	permissionMode: AutomationPermissionMode;
+	thinkingLevel?: DesktopAssistantSettings["thinkingLevel"];
+}
+
+export type AutomationRunStatus = "running" | "succeeded" | "failed" | "cancelled";
+export type AutomationRunTrigger = "manual" | "test" | "scheduled";
+
+export interface AutomationRunRecord {
+	id: string;
+	startedAt: string;
+	finishedAt?: string;
+	status: AutomationRunStatus;
+	trigger: AutomationRunTrigger;
+	sessionId?: string;
+	summary?: string;
+	error?: string;
+}
+
+export interface AutomationFlow {
+	id: string;
+	name: string;
+	description: string;
+	enabled: boolean;
+	nodes: FlowNode[];
+	edges: FlowEdge[];
+	trigger: AutomationTrigger;
+	runPolicy: AutomationRunPolicy;
+	lastRun?: AutomationRunRecord;
+	runs: AutomationRunRecord[];
+	nextRunAt?: string;
+	createdAt: string;
+	updatedAt: string;
+}
+
+export interface AutomationSummary {
+	total: number;
+	enabledCount: number;
+	runningCount: number;
+	nextRunAt?: string;
+	missedCount: number;
+}
+
+export interface AutomationListResponse {
+	flows: AutomationFlow[];
+	summary: AutomationSummary;
+}
+
+export interface AutomationGetRequest {
+	id: string;
+}
+
+export interface AutomationCreateRequest {
+	title?: string;
+	name?: string;
+	description?: string;
+	trigger?: AutomationTrigger;
+	runPolicy?: Partial<AutomationRunPolicy>;
+	nodes?: FlowNode[];
+	edges?: FlowEdge[];
+	draft?: unknown;
+	tags?: string[];
+	permissionMode?: AutomationPermissionMode;
+	enabled?: boolean;
+}
+
+export interface AutomationUpdateRequest {
+	id: string;
+	title?: string;
+	name?: string;
+	description?: string;
+	trigger?: AutomationTrigger;
+	runPolicy?: Partial<AutomationRunPolicy>;
+	nodes?: FlowNode[];
+	edges?: FlowEdge[];
+	draft?: unknown;
+	tags?: string[];
+	permissionMode?: AutomationPermissionMode;
+	enabled?: boolean;
+}
+
+export interface AutomationDeleteRequest {
+	id: string;
+}
+
+export interface AutomationSetEnabledRequest {
+	id: string;
+	enabled: boolean;
+}
+
+export interface AutomationRunRequest {
+	id: string;
+	trigger?: AutomationRunTrigger;
+	reason?: AutomationRunTrigger;
+}
+
+export interface AutomationRunResponse {
+	flow: AutomationFlow;
+	run: AutomationRunRecord;
+}
+
+export interface AutomationCancelRunRequest {
+	flowId: string;
+	runId?: string;
+}
+
+export interface AutomationOpenEditorRequest {
+	flowId?: string;
+	id?: string;
+}
+
+export interface AutomationDraft {
+	flowId?: string;
+	name: string;
+	description: string;
+	nodes: FlowNode[];
+	edges: FlowEdge[];
+	trigger: AutomationTrigger;
+	runPolicy: AutomationRunPolicy;
+	dirty: boolean;
+	updatedAt: string;
+}
+
+export type AutomationDraftOperation =
+	| {
+			type: "replace";
+			draft: Omit<Partial<AutomationDraft>, "nodes" | "edges"> & { nodes: FlowNodeInput[]; edges: FlowEdge[] };
+	  }
+	| {
+			type: "set_meta";
+			name?: string;
+			description?: string;
+			trigger?: AutomationTrigger;
+			runPolicy?: Partial<AutomationRunPolicy>;
+	  }
+	| { type: "add_node"; node: Omit<FlowNodeInput, "id"> & { id?: string } }
+	| { type: "update_node"; id: string; update: Partial<Omit<FlowNode, "id">> }
+	| { type: "delete_node"; id: string }
+	| { type: "connect"; edge: Omit<FlowEdge, "id"> & { id?: string } }
+	| { type: "disconnect"; id: string }
+	| { type: "autolayout" };
+
+export interface AutomationDraftGetRequest {
+	flowId?: string;
+}
+
+export interface AutomationDraftApplyRequest {
+	ops: AutomationDraftOperation[];
+}
+
+export interface AutomationDraftSaveRequest {
+	flowId?: string;
+}
+
+export interface AutomationDraftSaveResponse {
+	flow: AutomationFlow;
+	draft: AutomationDraft;
+}
+
+export interface AutomationDesignChatRequest {
+	flowId?: string;
+	message: string;
+}
+
+export interface AutomationDesignChatResponse {
+	sessionId: string;
+	snapshot: AutomationDraft;
+	/** The design assistant's reply text for this turn, if it produced one. */
+	reply?: string;
+	/** Full design conversation after this turn, so the editor renders the real thread. */
+	messages: ChatMessageView[];
+	timeline: TimelineItem[];
+	streamingText: string;
+	streamingThinking: string;
+}
+
+export interface AutomationDesignStateResponse {
+	/** Present only if a design session already exists. */
+	sessionId?: string;
+	messages: ChatMessageView[];
+	timeline: TimelineItem[];
+	streamingText: string;
+	streamingThinking: string;
+}
+
+export type AutomationProgressPhase = "enter" | "done";
+export type AutomationProgressEventKind = "step" | "branch" | "finish" | "log";
+
+export interface AutomationProgressEvent {
+	flowId: string;
+	runId: string;
+	kind: AutomationProgressEventKind;
+	nodeId?: string;
+	phase?: AutomationProgressPhase;
+	choice?: string;
+	status?: AutomationRunStatus;
+	summary?: string;
+	message?: string;
+	timestamp: string;
+}
+
 export type DesktopAssistantDiagnosticLevel = "debug" | "info" | "warn" | "error";
 
 export interface DesktopAssistantDiagnostic {
@@ -1055,6 +1540,10 @@ export interface DesktopAssistantEvent {
 		| "sandbox_status"
 		| "memo_changed"
 		| "memo_reminder"
+		| "automation_changed"
+		| "automation_draft_changed"
+		| "automation_progress"
+		| "automation_missed"
 		| "route";
 	snapshot?: DesktopAssistantSnapshot;
 	/** Live roster for "session_status" events (and mirrored on snapshots). */
@@ -1081,7 +1570,13 @@ export interface DesktopAssistantEvent {
 	memo?: MemoItem;
 	/** Roll-up carried on "memo_changed" / "memo_reminder" events. */
 	memoSummary?: MemoSummary;
-	route?: "settings" | "mcp" | "memo";
+	automation?: AutomationFlow;
+	automations?: AutomationFlow[];
+	automationSummary?: AutomationSummary;
+	automationDraft?: AutomationDraft;
+	automationRun?: AutomationRunRecord;
+	automationProgress?: AutomationProgressEvent;
+	route?: "settings" | "mcp" | "memo" | "automation";
 }
 
 export type PromptAttachmentKind = "text" | "word" | "excel" | "powerpoint" | "pdf" | "image" | "unknown";
@@ -1577,6 +2072,19 @@ export const DEFAULT_DESKTOP_ASSISTANT_SETTINGS: DesktopAssistantSettings = {
 		excel: { enabled: true, commandFirst: true, skillName: "excel-operation" },
 	},
 	webSearch: { mode: "auto", provider: "duckduckgo" },
+	browser: {
+		defaultBrowser: "built_in",
+		allowAiControl: true,
+		homeUrl: "https://www.google.com",
+		maxTabs: 12,
+		persistStorage: true,
+		searchTemplate: "https://www.google.com/search?q=%s",
+		shortcuts: [
+			{ id: "default-bing", label: "必应", url: "https://www.bing.com" },
+			{ id: "default-github", label: "GitHub", url: "https://github.com" },
+			{ id: "default-bilibili", label: "哔哩哔哩", url: "https://www.bilibili.com" },
+		],
+	},
 	mcp: {
 		enabled: true,
 		servers: [
@@ -1809,10 +2317,48 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	memoSnooze: "desktop-assistant:memo-snooze",
 	memoSetReminder: "desktop-assistant:memo-set-reminder",
 	memoDelete: "desktop-assistant:memo-delete",
+	automationList: "desktop-assistant:automation-list",
+	automationGet: "desktop-assistant:automation-get",
+	automationCreate: "desktop-assistant:automation-create",
+	automationUpdate: "desktop-assistant:automation-update",
+	automationDelete: "desktop-assistant:automation-delete",
+	automationSetEnabled: "desktop-assistant:automation-set-enabled",
+	automationRun: "desktop-assistant:automation-run",
+	automationCancelRun: "desktop-assistant:automation-cancel-run",
+	automationOpenEditor: "desktop-assistant:automation-open-editor",
+	automationDraftGet: "desktop-assistant:automation-draft-get",
+	automationDraftApply: "desktop-assistant:automation-draft-apply",
+	automationDraftSave: "desktop-assistant:automation-draft-save",
+	automationDesignChat: "desktop-assistant:automation-design-chat",
+	automationDesignState: "desktop-assistant:automation-design-state",
 	getAppLaunchCache: "desktop-assistant:get-app-launch-cache",
 	clearAppLaunchCache: "desktop-assistant:clear-app-launch-cache",
 	deleteAppLaunchCacheEntry: "desktop-assistant:delete-app-launch-cache-entry",
 	openAppLaunchCacheWindow: "desktop-assistant:open-app-launch-cache-window",
+	openUrlInDefaultBrowser: "desktop-assistant:open-url-in-default-browser",
+	openBuiltInBrowser: "desktop-assistant:open-built-in-browser",
+	getBuiltInBrowserStatus: "desktop-assistant:get-built-in-browser-status",
+	builtInBrowserNavigate: "desktop-assistant:built-in-browser-navigate",
+	builtInBrowserNewTab: "desktop-assistant:built-in-browser-new-tab",
+	builtInBrowserSwitchTab: "desktop-assistant:built-in-browser-switch-tab",
+	builtInBrowserCloseTab: "desktop-assistant:built-in-browser-close-tab",
+	builtInBrowserGoBack: "desktop-assistant:built-in-browser-go-back",
+	builtInBrowserGoForward: "desktop-assistant:built-in-browser-go-forward",
+	builtInBrowserReload: "desktop-assistant:built-in-browser-reload",
+	builtInBrowserStop: "desktop-assistant:built-in-browser-stop",
+	builtInBrowserSetContentBounds: "desktop-assistant:built-in-browser-set-content-bounds",
+	builtInBrowserClearStorage: "desktop-assistant:built-in-browser-clear-storage",
+	builtInBrowserGetNativeStatus: "desktop-assistant:built-in-browser-get-native-status",
+	builtInBrowserReadPage: "desktop-assistant:built-in-browser-read-page",
+	builtInBrowserQueryElements: "desktop-assistant:built-in-browser-query-elements",
+	builtInBrowserClick: "desktop-assistant:built-in-browser-click",
+	builtInBrowserTypeText: "desktop-assistant:built-in-browser-type-text",
+	builtInBrowserPressKey: "desktop-assistant:built-in-browser-press-key",
+	builtInBrowserScroll: "desktop-assistant:built-in-browser-scroll",
+	builtInBrowserScreenshot: "desktop-assistant:built-in-browser-screenshot",
+	builtInBrowserGetCookies: "desktop-assistant:built-in-browser-get-cookies",
+	builtInBrowserVirtualMouse: "desktop-assistant:built-in-browser-virtual-mouse",
+	builtInBrowserEvent: "desktop-assistant:built-in-browser-event",
 	getSandboxStatus: "desktop-assistant:get-sandbox-status",
 	initSandbox: "desktop-assistant:init-sandbox",
 	resetSandbox: "desktop-assistant:reset-sandbox",

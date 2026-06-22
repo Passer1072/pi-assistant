@@ -99,6 +99,26 @@ describe("evaluateAction — real lane × permission mode", () => {
 		expect(real("automatic", { command: "shutdown /r", riskText: "shutdown /r" }).effect).toBe("confirm");
 		expect(real("automatic", { command: "Get-Process", riskText: "Get-Process" }).effect).toBe("allow");
 	});
+
+	it("honours per-run autoApproveMaxRisk thresholds", () => {
+		expect(real("tiered", { command: "Get-Date", riskText: "Get-Date", autoApproveMaxRisk: "low" }).effect).toBe(
+			"allow",
+		);
+		expect(
+			real("tiered", { command: "New-Item file.txt", riskText: "New-Item file.txt", autoApproveMaxRisk: "low" })
+				.effect,
+		).toBe("confirm");
+		expect(
+			real("tiered", { command: "New-Item file.txt", riskText: "New-Item file.txt", autoApproveMaxRisk: "medium" })
+				.effect,
+		).toBe("allow");
+		expect(
+			real("tiered", { command: "shutdown /r", riskText: "shutdown /r", autoApproveMaxRisk: "medium" }).effect,
+		).toBe("confirm");
+		expect(
+			real("tiered", { command: "shutdown /r", riskText: "shutdown /r", autoApproveMaxRisk: "high" }).effect,
+		).toBe("allow");
+	});
 });
 
 describe("evaluateAction — hard rules win over mode", () => {

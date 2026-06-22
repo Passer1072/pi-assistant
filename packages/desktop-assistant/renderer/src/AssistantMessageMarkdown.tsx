@@ -37,8 +37,21 @@ function AssistantMessageMarkdownComponent({ text }: { text: string }) {
 		}, 1200);
 	}
 
+	// Links inside rendered markdown are raw <a> elements (injected via dangerouslySetInnerHTML),
+	// so they bypass React. Intercept clicks here and route web links through the user's
+	// configured default browser instead of letting Electron open them however it likes.
+	function handleClick(event: React.MouseEvent<HTMLDivElement>) {
+		const anchor = (event.target as HTMLElement | null)?.closest("a");
+		const href = anchor?.getAttribute("href");
+		if (!href) return;
+		const normalized = href.trim().toLowerCase();
+		if (!normalized.startsWith("http://") && !normalized.startsWith("https://")) return;
+		event.preventDefault();
+		void window.desktopAssistant.openUrlInDefaultBrowser({ url: href });
+	}
+
 	return (
-		<div className="assistant-markdown">
+		<div className="assistant-markdown" onClick={handleClick}>
 			{nodes.map((node, index) => {
 				if (node.type === "html") {
 					return <div key={`html-${index}`} dangerouslySetInnerHTML={{ __html: node.html }} />;

@@ -8,6 +8,7 @@ import type {
 	AgentSessionRuntime,
 	SessionManager,
 	SessionStartEvent,
+	ToolDefinition,
 } from "@earendil-works/pi-coding-agent";
 import type { DesktopAutomationHost } from "../desktop/automation-host.ts";
 import type {
@@ -129,8 +130,20 @@ export interface ConversationContextDeps {
 		options: {
 			thinkingLevel: DesktopAssistantSettings["thinkingLevel"];
 			sessionStartEvent?: SessionStartEvent;
+			profile?: ConversationRuntimeProfile;
 		},
 	): Promise<AgentSessionRuntime>;
+}
+
+export interface ConversationRuntimeProfile {
+	customTools?: ToolDefinition[];
+	activeToolNames?: string[];
+	appendSystemPrompt?: string[];
+	skipSkillRouting?: boolean;
+	skipPersonalSkillRouting?: boolean;
+	skipMemory?: boolean;
+	kind?: string;
+	agentSource?: "interactive" | "rpc" | "extension";
 }
 
 /**
@@ -193,11 +206,17 @@ export class ConversationContext {
 	private readonly tokenSavingTurnCompaction = new TokenSavingTurnCompactionController();
 	private titleGenerationStarted = false;
 	private disposed = false;
+	private readonly profile: ConversationRuntimeProfile | undefined;
 	private static readonly STREAMING_THROTTLE_MS = 50;
 
-	constructor(deps: ConversationContextDeps, sessionManager: SessionManager, options?: { archiveSessionId?: string }) {
+	constructor(
+		deps: ConversationContextDeps,
+		sessionManager: SessionManager,
+		options?: { archiveSessionId?: string; profile?: ConversationRuntimeProfile },
+	) {
 		this.deps = deps;
 		this.sessionManager = sessionManager;
+		this.profile = options?.profile;
 		this.archive = deps.coordinator.createWriter(
 			options?.archiveSessionId ?? sessionManager.getSessionId(),
 			sessionManager.getSessionFile(),
@@ -212,6 +231,10 @@ export class ConversationContext {
 
 	get hasRuntime(): boolean {
 		return this.runtime !== undefined;
+	}
+
+	get profileKind(): string | undefined {
+		return this.profile?.kind;
 	}
 
 	get resourceLoader(): AgentSessionRuntime["services"]["resourceLoader"] | undefined {
@@ -233,6 +256,7 @@ export class ConversationContext {
 		const runtime = await this.deps.createRuntime(this.sessionManager, {
 			thinkingLevel: this.getSessionBootstrapThinkingLevel(),
 			sessionStartEvent: options?.sessionStartEvent,
+			profile: this.profile,
 		});
 		this.runtime = runtime;
 		runtime.setRebindSession(async (session) => {
@@ -585,7 +609,7 @@ export class ConversationContext {
 
 	async prompt(
 		message: string,
-		source: "text" | "voice" = "text",
+		source: "text" | "voice" | "automation" = "text",
 		attachments: PendingPromptAttachment[] = [],
 	): Promise<void> {
 		if (!this.session) {
@@ -607,9 +631,13 @@ export class ConversationContext {
 		try {
 			const attachmentBlock = await buildAttachmentPromptBlock(attachments, this.deps.host);
 			const messageForModel = buildPromptWithAttachments(message, attachmentBlock);
-			const injectedMemories = this.getPromptMemories(messageForModel);
-			const selectedSkill = await this.deps.selectSkillForPrompt(messageForModel);
-			const selectedPersonalSkill = await this.deps.selectPersonalSkillForPrompt(messageForModel);
+			const injectedMemories = this.profile?.skipMemory ? [] : this.getPromptMemories(messageForModel);
+			const selectedSkill = this.profile?.skipSkillRouting
+				? undefined
+				: await this.deps.selectSkillForPrompt(messageForModel);
+			const selectedPersonalSkill = this.profile?.skipPersonalSkillRouting
+				? undefined
+				: await this.deps.selectPersonalSkillForPrompt(messageForModel);
 			const routedPrompt = buildVoiceInputPrompt(
 				buildPersonalSkillRoutedPrompt(
 					buildSkillRoutedPrompt(messageForModel, selectedSkill),
@@ -646,7 +674,7 @@ export class ConversationContext {
 					timestamp: Date.now(),
 				});
 			}
-			await this.session.prompt(promptWithMemory, { source: "interactive" });
+			await this.session.prompt(promptWithMemory, { source: this.profile?.agentSource ?? "interactive" });
 			this.archive.syncSessionFileMirror();
 		} finally {
 			this.setBusy(false);

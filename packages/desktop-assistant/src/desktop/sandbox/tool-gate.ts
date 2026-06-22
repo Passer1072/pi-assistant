@@ -1,5 +1,11 @@
 import { randomUUID } from "node:crypto";
-import type { AutomationPermissionMode, DesktopToolResult, SandboxLane, SandboxSettings } from "../../shared/types.ts";
+import type {
+	AutomationPermissionMode,
+	AutomationRiskLevel,
+	DesktopToolResult,
+	SandboxLane,
+	SandboxSettings,
+} from "../../shared/types.ts";
 import { classifyAutomationRisk } from "../risk.ts";
 import { type ActionContext, type Decision, evaluateAction, type SandboxRuntimeState } from "./policy-engine.ts";
 import { canonicalize, isWithin } from "./sandbox-workspace.ts";
@@ -8,6 +14,7 @@ import { canonicalize, isWithin } from "./sandbox-workspace.ts";
 export interface SandboxToolEnv {
 	settings: SandboxSettings;
 	permissionMode: AutomationPermissionMode;
+	autoApproveMaxRisk?: AutomationRiskLevel;
 	runtime: SandboxRuntimeState;
 }
 
@@ -59,6 +66,7 @@ export function gateAction(env: SandboxToolEnv, req: GateRequest): GateOutcome {
 		kind: req.kind,
 		lane,
 		permissionMode: env.permissionMode,
+		autoApproveMaxRisk: env.autoApproveMaxRisk,
 		command: req.command,
 		url: req.url,
 		writePaths,

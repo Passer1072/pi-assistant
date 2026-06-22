@@ -3,6 +3,7 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 import type {
 	AutomationPermissionMode,
+	AutomationRiskLevel,
 	DesktopCapabilityId,
 	DesktopCapabilitySettings,
 	DesktopToolResult,
@@ -42,6 +43,7 @@ import {
 export interface DesktopToolOptions {
 	host: DesktopAutomationHost;
 	permissionMode: () => AutomationPermissionMode;
+	autoApproveMaxRisk?: () => AutomationRiskLevel | undefined;
 	systemCapability: () => DesktopCapabilitySettings;
 	appLaunchCachePath?: string;
 	/** Names of currently active MCP tools (e.g. mcp_ncm_*), used to redirect app workflows to a control plugin. */
@@ -57,8 +59,26 @@ function sandboxEnvFor(options: DesktopToolOptions): SandboxToolEnv {
 	return {
 		settings: options.sandbox?.() ?? LEGACY_DISABLED_SANDBOX,
 		permissionMode: options.permissionMode(),
+		autoApproveMaxRisk: options.autoApproveMaxRisk?.(),
 		runtime: options.sandboxManager?.getRuntimeState() ?? LEGACY_RUNTIME_STATE,
 	};
+}
+
+function requiresToolConfirmation(riskLevel: AutomationRiskLevel, options: DesktopToolOptions): boolean {
+	const threshold = options.autoApproveMaxRisk?.();
+	if (!threshold) return requiresConfirmation(riskLevel, options.permissionMode());
+	return riskRank(riskLevel) > riskRank(threshold);
+}
+
+function riskRank(risk: AutomationRiskLevel): number {
+	switch (risk) {
+		case "low":
+			return 0;
+		case "medium":
+			return 1;
+		case "high":
+			return 2;
+	}
 }
 
 /** Sandbox cwd/env/limits for a PowerShell run, given the chosen lane. */
@@ -127,7 +147,7 @@ function result(params: {
 	stdout?: string;
 	stderr?: string;
 	riskText: string;
-	permissionMode: AutomationPermissionMode;
+	options: DesktopToolOptions;
 	observedState?: unknown;
 	confidence?: DesktopToolResult["confidence"];
 	nextActions?: string[];
@@ -142,7 +162,7 @@ function result(params: {
 		stdout: params.stdout,
 		stderr: params.stderr,
 		riskLevel,
-		requiresConfirmation: requiresConfirmation(riskLevel, params.permissionMode),
+		requiresConfirmation: requiresToolConfirmation(riskLevel, params.options),
 		observedState: params.observedState,
 		confidence: params.confidence,
 		nextActions: params.nextActions,
@@ -209,7 +229,7 @@ async function runOrBlock(
 			status: "succeeded",
 			stdout: commandResult.stdout,
 			stderr: commandResult.stderr,
-			permissionMode: options.permissionMode(),
+			options,
 			observedState: commandResult.observedState,
 			confidence: commandResult.confidence,
 			nextActions: commandResult.nextActions,
@@ -220,7 +240,7 @@ async function runOrBlock(
 			...params,
 			status: "failed",
 			stderr: error instanceof Error ? error.message : String(error),
-			permissionMode: options.permissionMode(),
+			options,
 		});
 		return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 	}

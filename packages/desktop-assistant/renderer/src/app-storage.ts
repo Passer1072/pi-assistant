@@ -14,6 +14,7 @@ export function persistSettings(settings: DesktopAssistantSettings): void {
 			permissionMode: settings.permissionMode,
 			capabilities: settings.capabilities,
 			webSearch: settings.webSearch,
+			browser: settings.browser,
 			voice: settings.voice,
 			tokenSaving: settings.tokenSaving,
 			// Sandbox config is intentionally NOT persisted here: it is authoritative in

@@ -4,6 +4,26 @@ import type { DesktopAgentService } from "../agent/desktop-agent-service.ts";
 import {
 	type AbortRequest,
 	type ApiKeyUpdateRequest,
+	type AutomationCancelRunRequest,
+	type AutomationCreateRequest,
+	type AutomationDeleteRequest,
+	type AutomationFlow,
+	type AutomationOpenEditorRequest,
+	type AutomationRunRequest,
+	type AutomationSetEnabledRequest,
+	type AutomationUpdateRequest,
+	type BrowserClearStorageRequest,
+	type BrowserCookieRequest,
+	type BrowserElementActionRequest,
+	type BrowserKeyRequest,
+	type BrowserNavigateRequest,
+	type BrowserQueryElementsRequest,
+	type BrowserReadPageRequest,
+	type BrowserScreenshotRequest,
+	type BrowserScrollRequest,
+	type BrowserSetBoundsRequest,
+	type BrowserTabRequest,
+	type BrowserVirtualMouseRequest,
 	type ClearConversationHistoryResponse,
 	type CloseSessionRequest,
 	type ConfirmationUpdateRequest,
@@ -32,6 +52,8 @@ import {
 	type MemoSetReminderRequest,
 	type MemoSnoozeRequest,
 	type MemoUpdateRequest,
+	type OpenBuiltInBrowserRequest,
+	type OpenUrlInDefaultBrowserRequest,
 	type PersonalSkillArchiveRequest,
 	type PersonalSkillReadRequest,
 	type PersonalSkillSaveRequest,
@@ -64,6 +86,7 @@ import { syncVoiceWakeWordUpdate } from "../shared/wake-word-settings.ts";
 import type { KwsService } from "../voice/kws-service.ts";
 import { transcribeAudio } from "../voice/stt-client.ts";
 import type { VoiceBridge } from "../voice/voice-bridge.ts";
+import type { BuiltInBrowserController } from "./built-in-browser-controller.ts";
 import type { LogStore } from "./log-store.ts";
 import type { WakeWordModelStore } from "./wake-word-model-store.ts";
 import { applyWindowMode } from "./window-mode.ts";
@@ -203,6 +226,7 @@ export function registerDesktopAssistantIpc(params: {
 	mainWindow: BrowserWindow;
 	getWindows?: () => Iterable<BrowserWindow>;
 	service: DesktopAgentService;
+	builtInBrowserController: BuiltInBrowserController;
 	voiceBridge: VoiceBridge;
 	logStore: LogStore;
 	wakeWordModelStore: WakeWordModelStore;
@@ -212,6 +236,7 @@ export function registerDesktopAssistantIpc(params: {
 	openToolsetManagerWindow: () => Promise<void>;
 	openPluginManagerWindow: () => Promise<void>;
 	openPersonalSkillManagerWindow: () => Promise<void>;
+	openFlowEditorWindow: (flowId?: string) => Promise<void>;
 	openLogWindow: () => Promise<void>;
 	openSandboxSettingsWindow: () => Promise<void>;
 }): void {
@@ -220,6 +245,7 @@ export function registerDesktopAssistantIpc(params: {
 		mainWindow,
 		getWindows,
 		service,
+		builtInBrowserController,
 		voiceBridge,
 		logStore,
 		wakeWordModelStore,
@@ -279,6 +305,26 @@ export function registerDesktopAssistantIpc(params: {
 		notification.show();
 	}
 
+	// OS-level alert for a scheduled automation that was missed while the app was closed.
+	// Missed runs are never auto-executed (desktop actions firing late is disruptive), so we
+	// just nudge the user; clicking opens the automation page to run it manually.
+	function showAutomationMissedNotification(flow: AutomationFlow): void {
+		if (!Notification.isSupported()) return;
+		const notification = new Notification({
+			title: `错过的自动化 · ${flow.name}`,
+			body: "应用未运行期间错过了计划执行，点击查看。",
+			silent: false,
+		});
+		notification.on("click", () => {
+			if (mainWindow.isDestroyed()) return;
+			if (mainWindow.isMinimized()) mainWindow.restore();
+			mainWindow.show();
+			mainWindow.focus();
+			sendToRenderer({ type: "route", route: "automation" });
+		});
+		notification.show();
+	}
+
 	function scheduleSnapshotSend(event: DesktopAssistantEvent): void {
 		// Always keep the latest snapshot so the renderer sees fresh state.
 		pendingSnapshot = event;
@@ -321,6 +367,9 @@ export function registerDesktopAssistantIpc(params: {
 				sendToRenderer(event);
 				if (event.type === "memo_reminder" && event.memo) {
 					showMemoReminderNotification(event.memo);
+				}
+				if (event.type === "automation_missed" && event.automation) {
+					showAutomationMissedNotification(event.automation);
 				}
 			}
 		}
@@ -459,11 +508,134 @@ export function registerDesktopAssistantIpc(params: {
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoDelete, (_event, request: MemoDeleteRequest) =>
 		service.deleteMemo(request),
 	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationList, () => service.listAutomations());
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationGet, (_event, request: { id: string }) => {
+		return service.getAutomation(request);
+	});
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationCreate, (_event, request: AutomationCreateRequest) =>
+		service.createAutomation(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationUpdate, (_event, request: AutomationUpdateRequest) =>
+		service.updateAutomation(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationDelete, (_event, request: AutomationDeleteRequest) => {
+		service.deleteAutomation(request);
+		return service.listAutomations();
+	});
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationSetEnabled, (_event, request: AutomationSetEnabledRequest) =>
+		service.setAutomationEnabled(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationRun, async (_event, request: AutomationRunRequest) => {
+		return service.runAutomation(request);
+	});
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationCancelRun, (_event, request: AutomationCancelRunRequest) => {
+		service.cancelAutomationRun(request);
+		const flow = service.getAutomation({ id: request.flowId });
+		return flow?.lastRun;
+	});
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.automationOpenEditor,
+		async (_event, request?: AutomationOpenEditorRequest) => {
+			const flowId = request?.flowId ?? (request as { id?: string } | undefined)?.id;
+			await service.openAutomationEditor({ flowId });
+		},
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationDraftGet, (_event, request: { flowId?: string } = {}) =>
+		service.getAutomationDraft(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationDraftApply, (_event, request: { ops: never[] }) =>
+		service.applyAutomationDraft(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationDraftSave, (_event, request: { flowId?: string } = {}) =>
+		service.saveAutomationDraft(request),
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.automationDesignChat,
+		(_event, request: { flowId?: string; message: string }) => service.designAutomation(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationDesignState, () => service.startAutomationDesignSession());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.getAppLaunchCache, () => service.getAppLaunchCache());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.clearAppLaunchCache, () => service.clearAppLaunchCache());
 	ipcMain.handle(
 		DESKTOP_ASSISTANT_CHANNELS.deleteAppLaunchCacheEntry,
 		(_event, request: DeleteAppLaunchCacheEntryRequest) => service.deleteAppLaunchCacheEntry(request.alias),
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.openUrlInDefaultBrowser,
+		(_event, request: OpenUrlInDefaultBrowserRequest) =>
+			builtInBrowserController.openUrl(
+				request.browser ?? service.snapshot().settings.browser.defaultBrowser,
+				request.url,
+			),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openBuiltInBrowser, (_event, request: OpenBuiltInBrowserRequest = {}) =>
+		builtInBrowserController.open(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.getBuiltInBrowserStatus, () => builtInBrowserController.status());
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserNavigate, (_event, request: BrowserNavigateRequest) =>
+		builtInBrowserController.navigate(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserNewTab, (_event, request?: { url?: string }) =>
+		builtInBrowserController.newTab(request?.url),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserSwitchTab, (_event, request: BrowserTabRequest) =>
+		builtInBrowserController.switchTab(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserCloseTab, (_event, request: BrowserTabRequest) =>
+		builtInBrowserController.closeTab(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGoBack, (_event, request: BrowserTabRequest = {}) =>
+		builtInBrowserController.goBack(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGoForward, (_event, request: BrowserTabRequest = {}) =>
+		builtInBrowserController.goForward(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserReload, (_event, request: BrowserTabRequest = {}) =>
+		builtInBrowserController.reload(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserStop, (_event, request: BrowserTabRequest = {}) =>
+		builtInBrowserController.stop(request),
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.builtInBrowserSetContentBounds,
+		(_event, request: BrowserSetBoundsRequest) => builtInBrowserController.setContentBounds(request),
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.builtInBrowserClearStorage,
+		(_event, request: BrowserClearStorageRequest) => builtInBrowserController.clearStorage(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGetNativeStatus, () =>
+		builtInBrowserController.getNativeStatus(),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserReadPage, (_event, request: BrowserReadPageRequest = {}) =>
+		builtInBrowserController.readPage(request),
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.builtInBrowserQueryElements,
+		(_event, request: BrowserQueryElementsRequest = {}) => builtInBrowserController.queryElements(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserClick, (_event, request: BrowserElementActionRequest) =>
+		builtInBrowserController.click(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserTypeText, (_event, request: BrowserElementActionRequest) =>
+		builtInBrowserController.typeText(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserPressKey, (_event, request: BrowserKeyRequest) =>
+		builtInBrowserController.pressKey(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserScroll, (_event, request: BrowserScrollRequest = {}) =>
+		builtInBrowserController.scroll(request),
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.builtInBrowserScreenshot,
+		(_event, request: BrowserScreenshotRequest = {}) => builtInBrowserController.screenshot(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGetCookies, (_event, request: BrowserCookieRequest = {}) =>
+		builtInBrowserController.getCookies(request),
+	);
+	ipcMain.handle(
+		DESKTOP_ASSISTANT_CHANNELS.builtInBrowserVirtualMouse,
+		(_event, request: BrowserVirtualMouseRequest) => builtInBrowserController.virtualMouse(request),
 	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.getSandboxStatus, () => service.getSandboxStatus());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.initSandbox, () => service.initSandbox());

@@ -1,12 +1,19 @@
 import type React from "react";
-import { ArrowLeft, BookOpen, Check, ChevronRight, Eye, EyeOff, KeyRound, Loader2, Minus, Pin, PinOff, Plus, Plug, RefreshCw, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, BookOpen, Check, ChevronRight, Eye, EyeOff, Globe, KeyRound, Loader2, Minus, Pin, PinOff, Plus, Plug, RefreshCw, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_DEEPSEEK_RELAY_URL } from "../../../src/shared/deepseek-connection.ts";
-import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, type DesktopAssistantSettings, type DesktopAssistantSnapshot, type WakeWordModelMetadata, type WebSearchProvider } from "../../../src/shared/types.ts";
+import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, type BrowserNativeStatus, type BrowserStorageClearScope, type BrowserTarget, type DesktopAssistantSettings, type DesktopAssistantSnapshot, type WakeWordModelMetadata, type WebSearchProvider } from "../../../src/shared/types.ts";
 import { resolveWakeWordModelWakeWord } from "../../../src/shared/wake-word-settings.ts";
 import { cloneSettings, normalizeDraftSettingsBeforeApply, settingsKey } from "../settings-draft.ts";
 import { apiKeyStatusText, formatBytes, formatImportedAt } from "../formatters.ts";
 import { PROVIDERS, updateVoiceSettings, VOICE_PROVIDER_LABEL, VOICE_STT_MODEL_HINT } from "../settings-view-model.ts";
+
+const SEARCH_ENGINE_OPTIONS: { label: string; template: string }[] = [
+	{ label: "Google", template: "https://www.google.com/search?q=%s" },
+	{ label: "必应 Bing", template: "https://www.bing.com/search?q=%s" },
+	{ label: "百度 Baidu", template: "https://www.baidu.com/s?wd=%s" },
+	{ label: "DuckDuckGo", template: "https://duckduckgo.com/?q=%s" },
+];
 
 export function SettingsView({
 	snapshot,
@@ -56,6 +63,9 @@ export function SettingsView({
 	const [appCacheStatus, setAppCacheStatus] = useState("");
 	const [wakeModelBusy, setWakeModelBusy] = useState(false);
 	const [wakeModelStatus, setWakeModelStatus] = useState("");
+	const [browserBusy, setBrowserBusy] = useState(false);
+	const [browserStatus, setBrowserStatus] = useState("");
+	const [nativeBrowserStatus, setNativeBrowserStatus] = useState<BrowserNativeStatus | undefined>();
 
 	const snapshotSettingsKey = useMemo(() => settingsKey(snapshot.settings), [snapshot.settings]);
 	const draftSettingsKey = useMemo(() => settingsKey(draftSettings), [draftSettings]);
@@ -82,6 +92,11 @@ export function SettingsView({
 	const updateDraftVoice = (update: Partial<DesktopAssistantSettings["voice"]>) => {
 		setSettingsStatus("");
 		setDraftSettings((current) => ({ ...current, ...updateVoiceSettings(current, update) }));
+	};
+
+	const updateDraftBrowser = (update: Partial<DesktopAssistantSettings["browser"]>) => {
+		setSettingsStatus("");
+		setDraftSettings((current) => ({ ...current, browser: { ...current.browser, ...update, persistStorage: true } }));
 	};
 
 	const restoreDraft = () => {
@@ -128,6 +143,40 @@ export function SettingsView({
 		});
 	};
 
+	const refreshNativeBrowserStatus = async () => {
+		if (!window.desktopAssistant) return;
+		setNativeBrowserStatus(await window.desktopAssistant.builtInBrowserGetNativeStatus());
+	};
+
+	const openBuiltInBrowser = async () => {
+		if (!window.desktopAssistant) return;
+		setBrowserBusy(true);
+		setBrowserStatus("");
+		try {
+			await window.desktopAssistant.openBuiltInBrowser();
+			await refreshNativeBrowserStatus();
+			setBrowserStatus("内置浏览器已打开。");
+		} catch (error) {
+			setBrowserStatus(error instanceof Error ? error.message : String(error));
+		} finally {
+			setBrowserBusy(false);
+		}
+	};
+
+	const clearBuiltInBrowserStorage = async (scope: BrowserStorageClearScope) => {
+		if (!window.desktopAssistant) return;
+		setBrowserBusy(true);
+		setBrowserStatus("");
+		try {
+			const result = await window.desktopAssistant.builtInBrowserClearStorage({ scope });
+			setBrowserStatus(`已清理 ${browserStorageScopeLabel(scope)}，当前 profile 约 ${formatBytes(result.profileSizeBytes)}。`);
+		} catch (error) {
+			setBrowserStatus(error instanceof Error ? error.message : String(error));
+		} finally {
+			setBrowserBusy(false);
+		}
+	};
+
 	const switchApiConnectionMode = async (mode: DesktopAssistantSettings["apiConnectionMode"]) => {
 		const nextBaseUrl =
 			mode === "relay" ? draftSettings.apiBaseUrl?.trim() || DEFAULT_DEEPSEEK_RELAY_URL : draftSettings.apiBaseUrl;
@@ -166,6 +215,7 @@ export function SettingsView({
 	};
 
 	const provider = draftSettings.provider ?? "deepseek";
+	const browserSettings = draftSettings.browser;
 	const currentProvider = PROVIDERS.find((item) => item.id === provider) ?? PROVIDERS[0];
 	const isCustom = provider === "custom";
 	const apiConnectionMode = draftSettings.apiConnectionMode ?? "official";
@@ -204,6 +254,22 @@ export function SettingsView({
 			})
 			.catch(() => {
 				if (!cancelled) setAppCacheAliasCount(undefined);
+			});
+		return () => {
+			cancelled = true;
+		};
+	}, []);
+
+	useEffect(() => {
+		if (!window.desktopAssistant) return;
+		let cancelled = false;
+		window.desktopAssistant
+			.builtInBrowserGetNativeStatus()
+			.then((status) => {
+				if (!cancelled) setNativeBrowserStatus(status);
+			})
+			.catch(() => {
+				if (!cancelled) setNativeBrowserStatus(undefined);
 			});
 		return () => {
 			cancelled = true;
@@ -338,6 +404,137 @@ export function SettingsView({
 		}
 	};
 
+	const renderBrowserSection = () => (
+		<section className="set-section">
+			<h3>浏览器</h3>
+			<label className="set-row">
+				<span className="setting-label-with-icon">
+					<Globe size={14} />
+					<span>默认浏览器</span>
+				</span>
+				<select
+					value={browserSettings.defaultBrowser}
+					onChange={(event) => updateDraftBrowser({ defaultBrowser: event.target.value as BrowserTarget })}
+				>
+					<option value="built_in">内置浏览器</option>
+					<option value="chrome">本机浏览器（Chrome）</option>
+					<option value="edge">本机浏览器（Edge）</option>
+				</select>
+			</label>
+			<label className="set-row toggle-row">
+				<span>允许 AI 控制浏览器</span>
+				<button
+					type="button"
+					className={`toggle ${browserSettings.allowAiControl ? "on" : ""}`}
+					onClick={() => updateDraftBrowser({ allowAiControl: !browserSettings.allowAiControl })}
+					aria-pressed={browserSettings.allowAiControl}
+				>
+					<span className="toggle-thumb" />
+				</button>
+			</label>
+			<label className="set-row">
+				<span>内置浏览器首页</span>
+				<input
+					type="text"
+					value={browserSettings.homeUrl}
+					onChange={(event) => updateDraftBrowser({ homeUrl: event.target.value })}
+					placeholder="https://www.google.com"
+				/>
+			</label>
+			<label className="set-row">
+				<span>默认搜索引擎</span>
+				<select
+					value={SEARCH_ENGINE_OPTIONS.some((opt) => opt.template === browserSettings.searchTemplate) ? browserSettings.searchTemplate : "custom"}
+					onChange={(event) => {
+						if (event.target.value !== "custom") updateDraftBrowser({ searchTemplate: event.target.value });
+					}}
+				>
+					{SEARCH_ENGINE_OPTIONS.map((opt) => (
+						<option key={opt.template} value={opt.template}>
+							{opt.label}
+						</option>
+					))}
+					{SEARCH_ENGINE_OPTIONS.some((opt) => opt.template === browserSettings.searchTemplate) ? null : (
+						<option value="custom">自定义</option>
+					)}
+				</select>
+			</label>
+			<label className="set-row">
+				<span>最大标签页</span>
+				<input
+					type="number"
+					min={1}
+					max={32}
+					value={browserSettings.maxTabs}
+					onChange={(event) => updateDraftBrowser({ maxTabs: Number(event.target.value) })}
+				/>
+			</label>
+			<div className="mcp-entry-row">
+				<div>
+					<strong>内置浏览器</strong>
+					<p className="set-hint">使用助手专用持久 profile，保存 Cookie、站点数据、缓存和标签页控制状态。</p>
+				</div>
+				<button type="button" className="primary-btn" onClick={() => void openBuiltInBrowser()} disabled={browserBusy}>
+					{browserBusy ? <Loader2 size={14} className="spin" /> : <Globe size={14} />}
+					<span>打开内置浏览器</span>
+				</button>
+			</div>
+			<div className="browser-native-grid">
+				<NativeBrowserRow icon={<Globe size={14} />} label="Chrome" status={nativeBrowserStatus?.chrome} />
+				<NativeBrowserRow icon={<Globe size={14} />} label="Edge" status={nativeBrowserStatus?.edge} />
+			</div>
+			<div className="browser-clear-row">
+				<button
+					type="button"
+					className="ghost-btn wide"
+					disabled={browserBusy}
+					onClick={() => {
+						if (window.confirm("确定要清理内置浏览器 Cookie 吗？")) void clearBuiltInBrowserStorage("cookies");
+					}}
+				>
+					Cookies
+				</button>
+				<button
+					type="button"
+					className="ghost-btn wide"
+					disabled={browserBusy}
+					onClick={() => {
+						if (window.confirm("确定要清理内置浏览器缓存吗？")) void clearBuiltInBrowserStorage("cache");
+					}}
+				>
+					缓存
+				</button>
+				<button
+					type="button"
+					className="ghost-btn wide"
+					disabled={browserBusy}
+					onClick={() => {
+						if (window.confirm("确定要清理内置浏览器站点数据吗？")) void clearBuiltInBrowserStorage("site_data");
+					}}
+				>
+					站点数据
+				</button>
+				<button
+					type="button"
+					className="danger-btn"
+					disabled={browserBusy}
+					onClick={() => {
+						if (window.confirm("确定要清理内置浏览器全部存储吗？这会清除登录态和站点数据。")) {
+							void clearBuiltInBrowserStorage("all");
+						}
+					}}
+				>
+					<Trash2 size={13} />
+					<span>全部清理</span>
+				</button>
+			</div>
+			<p className="set-hint">
+				AI 未被用户指定浏览器时会使用默认浏览器；显式说“用 Chrome / Edge / 内置浏览器”只覆盖本次操作，不修改设置。
+			</p>
+			{browserStatus ? <div className="skill-editor-status">{browserStatus}</div> : null}
+		</section>
+	);
+
 	return (
 		<div className="screen settings-screen">
 			<div className="titlebar" style={{ WebkitAppRegion: "drag" } as React.CSSProperties}>
@@ -399,6 +596,7 @@ export function SettingsView({
 						</button>
 					</label>
 				</section>
+				{renderBrowserSection()}
 				<section className="set-section">
 					<h3>插件</h3>
 					<div className="mcp-entry-row">
@@ -1322,4 +1520,39 @@ export function SettingsView({
 			</div>
 		</div>
 	);
+}
+
+function NativeBrowserRow({
+	icon,
+	label,
+	status,
+}: {
+	icon: React.ReactNode;
+	label: string;
+	status?: BrowserNativeStatus["chrome"];
+}) {
+	return (
+		<div className="browser-native-row">
+			<span className="setting-label-with-icon">
+				{icon}
+				<strong>{label}</strong>
+			</span>
+			<small className={status?.available ? "ok" : "missing"}>
+				{status?.available ? (status.aiProfileRunning ? "AI profile 已启动" : "已找到") : "未找到"}
+			</small>
+		</div>
+	);
+}
+
+function browserStorageScopeLabel(scope: BrowserStorageClearScope): string {
+	switch (scope) {
+		case "cookies":
+			return "Cookie";
+		case "cache":
+			return "缓存";
+		case "site_data":
+			return "站点数据";
+		case "all":
+			return "全部浏览器存储";
+	}
 }

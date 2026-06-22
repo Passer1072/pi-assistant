@@ -1,4 +1,4 @@
-export type Route = "home" | "chat" | "settings" | "memo";
+export type Route = "home" | "chat" | "settings" | "automation" | "memo";
 
 export interface StoredConversation {
 	sessionId: string;

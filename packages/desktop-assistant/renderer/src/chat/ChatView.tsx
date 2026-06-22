@@ -1,15 +1,12 @@
 import { BellRing, Brain, Check, ChevronDown, ChevronUp, FileText, Loader2, Mic, Send, Sparkles, Square, Volume2, X } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
-	ChatMessageView,
 	DesktopAssistantSnapshot,
 	PendingConfirmation,
 	PendingPromptAttachment,
-	TimelineItem,
 	WakeWordModelMetadata,
 	WindowMode,
 } from "../../../src/shared/types.ts";
-import { AssistantMessageMarkdown } from "../AssistantMessageMarkdown.tsx";
 import { attachmentsFromFiles, attachmentsFromText, formatAttachmentSize } from "./attachments.ts";
 import { buildDisplayItems, type DisplayItem } from "../display-items.ts";
 import { PetLayer, type PetLayerHandle } from "../pet/PetLayer.tsx";
@@ -17,37 +14,13 @@ import type { PetConfig } from "../pet/types.ts";
 import { TitleBar } from "../components/TitleBar.tsx";
 import { voiceToneLabels, voiceToneOf } from "../voice-ui.ts";
 import { buildVirtualListLayout, calculateVirtualWindowFromLayout } from "./virtual-list.ts";
-
-function formatToolName(rawTitle: string): string {
-	const m = rawTitle.match(/Tool (?:started|finished|running):\s*(.+)/i);
-	const name = m ? m[1] : rawTitle;
-	return name.replace(/_/g, " ");
-}
-
-function formatTokenCount(tokens: number): string {
-	if (tokens >= 1_000_000) return `${(tokens / 1_000_000).toFixed(tokens >= 10_000_000 ? 0 : 1)}M`;
-	if (tokens >= 1_000) return `${(tokens / 1_000).toFixed(tokens >= 10_000 ? 0 : 1)}K`;
-	return tokens.toLocaleString();
-}
-
-type TokenUsageDisplay = { total: number; input: number; output: number; cacheRead: number; cacheWrite: number };
-
-function formatMessageTokenUsage(message: { tokenUsage?: TokenUsageDisplay; turnTokenUsage?: TokenUsageDisplay }): string | undefined {
-	const usage = message.tokenUsage;
-	const parts: string[] = [];
-	if (usage) {
-		parts.push(`本次响应 ${formatTokenCount(usage.total)} tokens`);
-	}
-	if (message.turnTokenUsage && (!usage || message.turnTokenUsage.total !== usage.total)) {
-		parts.push(`本轮合计 ${formatTokenCount(message.turnTokenUsage.total)} tokens`);
-	}
-	if (!usage) return parts.length > 0 ? parts.join(" · ") : undefined;
-	parts.push(`输入 ${formatTokenCount(usage.input + usage.cacheRead + usage.cacheWrite)}`);
-	parts.push(`输出 ${formatTokenCount(usage.output)}`);
-	if (usage.cacheRead > 0) parts.push(`缓存读 ${formatTokenCount(usage.cacheRead)}`);
-	if (usage.cacheWrite > 0) parts.push(`缓存写 ${formatTokenCount(usage.cacheWrite)}`);
-	return parts.join(" · ");
-}
+import {
+	DisplayItemRow as SharedDisplayItemRow,
+	displayItemKey as sharedDisplayItemKey,
+	formatTokenCount,
+	LiveAssistantResponse,
+	TimelineStrip as SharedTimelineStrip,
+} from "./ConversationDisplay.tsx";
 
 function formatContextUsage(snapshot: DesktopAssistantSnapshot): string | undefined {
 	const usage = snapshot.contextUsage;
@@ -71,215 +44,6 @@ const VIRTUALIZATION_THRESHOLD = 80;
 
 function isThreadAtBottom(el: HTMLElement): boolean {
 	return el.scrollHeight - el.scrollTop - el.clientHeight <= THREAD_BOTTOM_THRESHOLD_PX;
-}
-
-interface ToolDetail {
-	preview: string; // one-line summary for collapsed state
-	full: string; // full content shown when expanded
-}
-
-/**
- * Extract human-readable preview and full content from a timeline item's detail JSON.
- * detail is JSON.stringify(event.result) for end events → has .details.{stdout,stderr,target}
- * detail is JSON.stringify(event.args)  for start events → has raw tool params
- */
-function parseToolDetail(detail: string | undefined): ToolDetail {
-	if (!detail) return { preview: "", full: "" };
-	try {
-		const parsed = JSON.parse(detail) as Record<string, unknown>;
-
-		// Completed result format: { content:[...], details: DesktopToolResult }
-		const d = parsed.details as Record<string, unknown> | undefined;
-		if (d && typeof d === "object") {
-			const target = String(d.target ?? "").trim();
-			const stdout = String(d.stdout ?? "").trim();
-			const stderr = String(d.stderr ?? "").trim();
-			const intent = String(d.intent ?? "").trim();
-
-			// One-line preview: prefer target (the command/path/query)
-			const previewSource = target || stdout.split("\n")[0] || intent;
-			const preview = previewSource.replace(/[\r\n]+/g, " ").slice(0, 120);
-
-			// Full detail
-			const sections: string[] = [];
-			if (intent && intent !== target) sections.push(`意图: ${intent}`);
-			if (target) sections.push(`目标: ${target}`);
-			if (stdout) sections.push(`输出:\n${stdout}`);
-			if (stderr) sections.push(`错误:\n${stderr}`);
-			return { preview, full: sections.join("\n\n") || target };
-		}
-
-		// Args format (tool not yet completed or start event)
-		for (const key of ["script", "command", "content", "query", "path", "app", "url", "data", "slides"]) {
-			if (key in parsed) {
-				const val = String(parsed[key]);
-				return { preview: val.replace(/[\r\n]+/g, " ").slice(0, 120), full: val };
-			}
-		}
-
-		const json = JSON.stringify(parsed, null, 2);
-		return { preview: json.slice(0, 120).replace(/[\r\n]+/g, " "), full: json };
-	} catch {
-		return { preview: detail.slice(0, 120).replace(/[\r\n]+/g, " "), full: detail };
-	}
-}
-
-function ToolCallEntry({
-	item,
-	expanded,
-	onToggle,
-}: {
-	item: TimelineItem;
-	expanded: boolean;
-	onToggle: () => void;
-}) {
-	const name = formatToolName(item.title);
-	const detail = expanded ? parseToolDetail(item.detail) : { full: "" };
-
-	return (
-		<div className={`tool-call-item ${item.status}`}>
-			<button className="tool-call-header" type="button" onClick={onToggle} aria-expanded={expanded}>
-				<span className="tool-call-icon">
-					{item.status === "running" ? (
-						<Loader2 size={12} className="spin" />
-					) : item.status === "succeeded" ? (
-						<Check size={12} />
-					) : item.status === "failed" ? (
-						<X size={12} />
-					) : (
-						<Square size={12} />
-					)}
-				</span>
-				<span className="tool-call-name">{name}</span>
-				<span className="tool-call-chevron">
-					{expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-				</span>
-			</button>
-			{expanded && (
-				<div className="tool-call-body">
-					<pre>{detail.full || item.detail || "(无详情)"}</pre>
-				</div>
-			)}
-		</div>
-	);
-}
-
-const MemoToolCallEntry = memo(ToolCallEntry);
-
-function ThinkingBlock({
-	text,
-	expanded,
-	onToggle,
-	streaming,
-}: {
-	text: string;
-	expanded: boolean;
-	onToggle: () => void;
-	streaming?: boolean;
-}) {
-	return (
-		<div className={`thinking-block ${streaming ? "streaming" : "static"}`}>
-			<button className="thinking-block-header" type="button" onClick={onToggle} aria-expanded={expanded}>
-				<span className="thinking-block-icon">
-					<Brain size={12} />
-				</span>
-				<span className="thinking-block-title">{streaming ? "思考中..." : "已深度思考"}</span>
-				<span className="thinking-block-chevron">
-					{expanded ? <ChevronUp size={11} /> : <ChevronDown size={11} />}
-				</span>
-			</button>
-			{expanded ? (
-				<div className="thinking-block-body">
-					<pre>{text}{streaming ? <span className="streaming-cursor" /> : null}</pre>
-				</div>
-			) : null}
-		</div>
-	);
-}
-
-const MemoThinkingBlock = memo(ThinkingBlock);
-
-// ─────────────────────────────────────────────────────────────────────────────
-
-function ThinkingDots() {
-	return (
-		<div className="thinking-dots" aria-label="思考中">
-			<span />
-			<span />
-			<span />
-		</div>
-	);
-}
-
-function TimelineStrip({ items }: { items: TimelineItem[] }) {
-	// Exclude thinking_summary: it's internal reasoning detail and its "running"
-	// state can outlive the agent turn due to no completion event being emitted.
-	const display = items.filter((item) => item.kind !== "thinking_summary" && item.kind !== "compaction");
-	if (!display.length) return null;
-	return (
-		<div className="timeline-strip">
-			{display.slice(-3).map((item) => (
-				<div key={item.id + item.timestamp} className={`tl-pill ${item.status}`}>
-					{item.status === "running" ? (
-						<Loader2 className="spin" size={12} />
-					) : item.status === "succeeded" ? (
-						<Check size={12} />
-					) : item.status === "failed" ? (
-						<X size={12} />
-					) : (
-						<Square size={12} />
-					)}
-					<span>{item.title}</span>
-				</div>
-			))}
-		</div>
-	);
-}
-
-function ThreadNotice({ item }: { item: TimelineItem }) {
-	return (
-		<div className={`thread-notice ${item.kind} ${item.status}`}>
-			<span className="thread-notice-line" />
-			<span className="thread-notice-content">
-				{item.status === "running" ? <Loader2 size={12} className="spin" /> : null}
-				<span>{item.title}</span>
-			</span>
-			<span className="thread-notice-line" />
-		</div>
-	);
-}
-
-const MemoThreadNotice = memo(ThreadNotice);
-
-const MessageBubbleRow = memo(function MessageBubbleRow({
-	message,
-}: {
-	message: ChatMessageView;
-}) {
-	const tokenUsageText = message.role === "assistant" ? formatMessageTokenUsage(message) : undefined;
-	return (
-		<div className={`bubble-row ${message.role}`}>
-			<div className={`bubble ${message.role}`}>
-				{message.role === "assistant" ? (
-					<div className="bubble-meta">
-						<Sparkles size={11} />
-						<span>助手</span>
-					</div>
-				) : null}
-				{message.role === "assistant" ? (
-					<AssistantMessageMarkdown text={message.text} />
-				) : (
-					<p>{message.text}</p>
-				)}
-				{tokenUsageText ? <div className="message-token-usage">{tokenUsageText}</div> : null}
-			</div>
-		</div>
-	);
-});
-
-function displayItemKey(item: DisplayItem): string {
-	if (item.kind === "message") return `message-${item.message.id}`;
-	return `${item.kind}-${item.item.id}-${item.item.timestamp}`;
 }
 
 function VirtualChatList({
@@ -306,7 +70,7 @@ function VirtualChatList({
 	const measuredHeightsRef = useRef(new Map<string, number>());
 	const [measurementVersion, setMeasurementVersion] = useState(0);
 	const useVirtualization = items.length > VIRTUALIZATION_THRESHOLD;
-	const virtualItems = useMemo(() => items.map((item) => ({ key: displayItemKey(item) })), [items]);
+	const virtualItems = useMemo(() => items.map((item) => ({ key: sharedDisplayItemKey(item) })), [items]);
 	const [listTop, setListTop] = useState(0);
 	const virtualLayout = useMemo(
 		() =>
@@ -381,10 +145,10 @@ function VirtualChatList({
 				<div className="virtual-chat-spacer" style={{ height: virtualWindow.topSpacerHeight }} />
 			) : null}
 			{visibleItems.map((item) => {
-				const key = displayItemKey(item);
+				const key = sharedDisplayItemKey(item);
 				return (
 					<div key={key} ref={setItemRef(key)} className="virtual-chat-item">
-						<DisplayItemRow
+						<SharedDisplayItemRow
 							item={item}
 							expandedTools={expandedTools}
 							expandedThinking={expandedThinking}
@@ -402,45 +166,6 @@ function VirtualChatList({
 }
 
 const MemoVirtualChatList = memo(VirtualChatList);
-
-function DisplayItemRow({
-	item,
-	expandedTools,
-	expandedThinking,
-	onToggleTool,
-	onToggleThinking,
-}: {
-	item: DisplayItem;
-	expandedTools: Set<string>;
-	expandedThinking: Set<string>;
-	onToggleTool: (id: string) => void;
-	onToggleThinking: (id: string) => void;
-}) {
-	if (item.kind === "notice") {
-		return <MemoThreadNotice item={item.item} />;
-	}
-	if (item.kind === "thinking") {
-		const t = item.item;
-		return (
-			<div className="bubble-row assistant">
-				<MemoThinkingBlock
-					text={t.detail ?? ""}
-					expanded={expandedThinking.has(t.id)}
-					onToggle={() => onToggleThinking(t.id)}
-				/>
-			</div>
-		);
-	}
-	if (item.kind === "tool") {
-		const t = item.item;
-		return (
-			<div className="bubble-row assistant">
-				<MemoToolCallEntry item={t} expanded={expandedTools.has(t.id)} onToggle={() => onToggleTool(t.id)} />
-			</div>
-		);
-	}
-	return <MessageBubbleRow message={item.message} />;
-}
 
 function ApprovalPanel({
 	items,
@@ -837,44 +562,15 @@ export function ChatView({
 
 				<ApprovalPanel items={snapshot.pendingConfirmations} onApprove={onApprove} onReject={onReject} />
 
-				{isAnswering ? (
-					<div className="bubble-row assistant">
-						<div className="bubble assistant">
-							{snapshot.streamingText ? (
-								<>
-									<div className="bubble-meta">
-										<Sparkles size={11} />
-										<span>助手</span>
-									</div>
-									{snapshot.streamingThinking ? (
-										<MemoThinkingBlock
-											text={snapshot.streamingThinking}
-											expanded={liveThinkingExpanded}
-											onToggle={() => setLiveThinkingExpanded((current) => !current)}
-										/>
-									) : null}
-									<p style={{ whiteSpace: "pre-wrap", margin: 0 }}>{snapshot.streamingText}</p>
-									<span className="streaming-cursor" />
-								</>
-							) : (
-								<>
-									{snapshot.streamingThinking ? (
-										<MemoThinkingBlock
-											streaming
-											text={snapshot.streamingThinking}
-											expanded={liveThinkingExpanded}
-											onToggle={() => setLiveThinkingExpanded((current) => !current)}
-										/>
-									) : (
-										<ThinkingDots />
-									)}
-								</>
-							)}
-						</div>
-					</div>
-				) : null}
+				<LiveAssistantResponse
+					isRunning={isAnswering}
+					streamingText={snapshot.streamingText}
+					streamingThinking={snapshot.streamingThinking}
+					liveThinkingExpanded={liveThinkingExpanded}
+					onToggleLiveThinking={() => setLiveThinkingExpanded((current) => !current)}
+				/>
 
-				<TimelineStrip items={snapshot.timeline} />
+				<SharedTimelineStrip items={snapshot.timeline} />
 				{contextUsageText ? <div className="context-usage-footer">{contextUsageText}</div> : null}
 			</div>
 			{showJumpToLatest ? (
