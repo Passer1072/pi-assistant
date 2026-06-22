@@ -147,6 +147,17 @@ export class BuiltInBrowserController {
 		return status;
 	}
 
+	async listBrowserTabs(target: BrowserTarget): Promise<unknown> {
+		if (target === "built_in") {
+			const status = this.buildStatusSync();
+			return { browser: target, tabs: status.tabs, activeTabId: status.activeTabId };
+		}
+		return this.withNativeCdp(target, async (client) => {
+			const pages = await client.listPages();
+			return { browser: target, tabs: pages.map((page) => cdpPageToTabView(page, false)) };
+		});
+	}
+
 	async openUrl(target: BrowserTarget, url: string): Promise<unknown> {
 		if (target === "built_in") return this.open({ url });
 		return this.openNative(target, url);
@@ -335,6 +346,7 @@ export class BuiltInBrowserController {
 	toolHost(getDefaultBrowser: () => BrowserTarget): BrowserToolHost {
 		return {
 			getDefaultBrowser,
+			listTabs: (target) => this.listBrowserTabs(target),
 			openUrl: (target, url) => this.openUrl(target, url),
 			newTab: (target, url) => this.newBrowserTab(target, url),
 			switchTab: (target, request) => this.switchBrowserTab(target, request),

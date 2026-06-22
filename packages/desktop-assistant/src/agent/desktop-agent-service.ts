@@ -645,8 +645,19 @@ export class DesktopAgentService {
 		};
 	}
 
-	/** True unless this MCP tool belongs to an Office MCP server whose capability is disabled. */
+	/** AI browser control is active → the built-in browser_* tools are the canonical control surface. */
+	private aiBrowserControlActive(): boolean {
+		return this.settings.browser.allowAiControl && this.browserHost !== undefined;
+	}
+
+	/** True unless this MCP tool is gated off (disabled Office capability, or a superseded browser MCP). */
 	private isMcpToolEnabled(name: string): boolean {
+		// When AI browser control is active, suppress any external browser-control MCP (mcp_browser_*).
+		// Its browser extension is NOT connected to the assistant's built-in browser, so the model would
+		// otherwise pick it (take_control/list_tabs/controlled_status) and fail. Force the browser_* tools.
+		if (this.aiBrowserControlActive() && isExternalBrowserControlToolName(name)) {
+			return false;
+		}
 		for (const gate of OFFICE_MCP_TOOL_GATES) {
 			if (name.startsWith(gate.prefix) && !this.settings.capabilities[gate.capability].enabled) {
 				return false;
@@ -2686,6 +2697,16 @@ function normalizeToolGates(value: unknown): Record<string, SandboxToolGate> {
 		if (gate === "allow" || gate === "confirm" || gate === "deny") out[name] = gate;
 	}
 	return out;
+}
+
+/**
+ * External "Browser Control" MCP tools are wrapped as mcp_browser_* (e.g. mcp_browser_list_tabs,
+ * mcp_browser_control_take_control). They drive a separate extension/CDP-controlled browser, which
+ * is not connected to the assistant's built-in browser — so they are suppressed while AI browser
+ * control is active in favor of the built-in browser_* tools.
+ */
+export function isExternalBrowserControlToolName(name: string): boolean {
+	return name.startsWith("mcp_browser_");
 }
 
 export function normalizeBrowserSettings(update?: Partial<BrowserSettings>): BrowserSettings {

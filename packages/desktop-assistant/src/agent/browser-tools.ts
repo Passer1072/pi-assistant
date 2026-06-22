@@ -18,6 +18,7 @@ import type {
 
 export interface BrowserToolHost {
 	getDefaultBrowser(): BrowserTarget;
+	listTabs(target: BrowserTarget): Promise<unknown>;
 	openUrl(target: BrowserTarget, url: string): Promise<unknown>;
 	newTab(target: BrowserTarget, url?: string): Promise<unknown>;
 	switchTab(target: BrowserTarget, request: BrowserTabRequest): Promise<unknown>;
@@ -35,6 +36,7 @@ export interface BrowserToolHost {
 }
 
 export const BROWSER_TOOL_NAMES = [
+	"browser_list_tabs",
 	"browser_open_url",
 	"browser_new_tab",
 	"browser_switch_tab",
@@ -73,6 +75,21 @@ const ROUTING_GUIDELINES = [
 
 export function createBrowserToolDefinitions(host: BrowserToolHost): ToolDefinition[] {
 	return [
+		defineTool({
+			name: "browser_list_tabs",
+			label: "List browser tabs",
+			description:
+				"List the open tabs in the browser (id, title, url, which is active). Use this to see the current browser state before reading, switching, or acting on a tab.",
+			promptSnippet: "List the open browser tabs to see the current state before acting.",
+			promptGuidelines: ROUTING_GUIDELINES,
+			parameters: Type.Object({
+				browser: optionalBrowser,
+			}),
+			execute: async (_id, params) =>
+				browserResult(host, "List browser tabs", "browser_list_tabs", "tabs", params.browser, (target) =>
+					host.listTabs(target),
+				),
+		}),
 		defineTool({
 			name: "browser_open_url",
 			label: "Open browser URL",
@@ -419,8 +436,9 @@ export function buildBrowserRoutingAppendPrompt(defaultBrowser: BrowserTarget): 
 	return [
 		"<browser_routing_policy>",
 		`The user's default browser is ${defaultBrowser}.`,
-		"For ANY task involving a website, web page, URL, opening/reading/searching web content in a browser, or browser automation, you MUST use the browser_* tools (e.g. browser_open_url). They are the only correct way to open web content.",
+		"For ANY task involving a website, web page, URL, opening/reading/searching web content in a browser, or browser automation, you MUST use the browser_* tools (e.g. browser_open_url, browser_read_page, browser_query_elements). They are the only correct way to open, read, inspect, and control web content.",
 		"NEVER use open_app, app_interaction, shell commands, or keyboard/mouse automation to launch a web browser (Chrome, Edge, Firefox, etc.) or to open a URL. Those bypass the user's default browser and are wrong. open_app is only for non-browser desktop applications.",
+		"Do NOT use external browser-control or browser-extension MCP tools (take_control, list_tabs, controlled_status, cursor_*, etc.) to inspect or control the browser — they target a separate external browser that is NOT connected to this assistant's browser. To read tabs or page state, use browser_read_page / browser_query_elements on this browser.",
 		"Omit the browser parameter so the browser_* tools use the user's default browser.",
 		"Only pass browser when the user explicitly says to use Chrome, Edge, or the built-in browser for this operation.",
 		"Do not casually switch browsers. If the default browser is unavailable or lacks a required capability, say so and choose the smallest clear fallback.",

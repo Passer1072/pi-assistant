@@ -17,6 +17,7 @@ function setup(defaultBrowser: BrowserTarget = "built_in") {
 		};
 	const host: BrowserToolHost = {
 		getDefaultBrowser: () => defaultBrowser,
+		listTabs: record("listTabs"),
 		openUrl: record("openUrl"),
 		newTab: record("newTab"),
 		switchTab: record("switchTab"),
@@ -62,6 +63,12 @@ describe("browser tool routing", () => {
 		const { calls, run } = setup("built_in");
 		await run("browser_open_url", { url: "https://example.com", browser: "edge" });
 		expect(calls[0]).toEqual({ method: "openUrl", target: "edge" });
+	});
+
+	it("exposes a built-in browser_list_tabs tool routed to the default browser", async () => {
+		const { calls, run } = setup("built_in");
+		await run("browser_list_tabs", {});
+		expect(calls).toEqual([{ method: "listTabs", target: "built_in" }]);
 	});
 
 	it("reports tool failures as a failed result instead of throwing", async () => {
