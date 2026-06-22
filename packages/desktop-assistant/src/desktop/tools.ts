@@ -139,7 +139,7 @@ const SYSTEM_OPERATION_GUIDELINES = [
 	"For music players (网易云音乐/NetEase Cloud Music, QQ音乐, Spotify, etc.): if a music-control MCP plugin tool (name starts with mcp_, e.g. mcp_ncm_*) is available, you MUST use it for search/play/点歌/歌单/红心 instead of opening the app or pressing keys. Only when no such plugin exists, use app_interaction for the app workflow, then media_control, then keyboard_mouse as the last resort.",
 	"Use media_control for generic system media keys (play, pause, next, previous) when no app-specific control plugin is available. Do not rely on keyboard_mouse alone for media playback tasks.",
 	"After GUI or media actions, verify state with desktop_observe, get_screen_context, or the structured tool result before claiming completion.",
-	"打开网页 / 网址 / 浏览器：必须使用 browser_* 工具（如 browser_open_url），它会走用户设置的默认浏览器。绝不要用 open_app、命令或键鼠自动化去启动 Chrome/Edge/Firefox 或打开网址——那会绕开默认浏览器。open_app 只用于非浏览器应用。",
+	"打开网页 / 网址 / 浏览器：用浏览器工具（内置 browser_* 或外部浏览器 MCP，取决于设置），不要用 open_app、命令或键鼠自动化去启动 Chrome/Edge/Firefox 或打开网址。open_app 只用于非浏览器应用。",
 	"打开应用：open_app 若返回「已在运行」或「进程已在运行/窗口加载中」，即视为已成功——绝不要再次 open_app 或 find_app 重开（会开出多个实例）。需要确认窗口出现，就用 desktop_observe 稍等观察，而不是重复启动。",
 	"控制类 MCP（如 mcp_ncm_*）若返回「目标软件正在启动中，请稍后重试」之类的提示：说明它已自动启动目标软件，应当等待约 5~10 秒后【重试同一个 MCP 工具一次】即可，不要反复重试、也不要因此改用桌面自动化/键盘去操作。",
 	"Use shell_command_safe for low-risk Windows system operations that are not covered by a dedicated tool, while respecting confirmation gates for risky actions.",

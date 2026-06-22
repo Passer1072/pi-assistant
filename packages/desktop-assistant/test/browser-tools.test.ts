@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { type BrowserToolHost, createBrowserToolDefinitions } from "../src/agent/browser-tools.ts";
+import {
+	type BrowserToolHost,
+	buildBrowserRoutingAppendPrompt,
+	createBrowserToolDefinitions,
+} from "../src/agent/browser-tools.ts";
 import type { BrowserTarget } from "../src/shared/types.ts";
 
 interface Recorded {
@@ -85,5 +89,30 @@ describe("browser tool routing", () => {
 		const result = await tool.execute("t", { url: "https://x.com" }, undefined, undefined, undefined);
 		expect(result.details.status).toBe("failed");
 		expect(result.details.stderr).toContain("Chrome was not found.");
+	});
+});
+
+describe("buildBrowserRoutingAppendPrompt", () => {
+	it("built_in: mandates browser_* and forbids the external browser MCP", () => {
+		const prompt = buildBrowserRoutingAppendPrompt("built_in", "built_in");
+		expect(prompt).toContain("you MUST use the browser_* tools");
+		expect(prompt).toContain("Do NOT use external browser-control");
+	});
+
+	it("external: directs the model to the external browser-control MCP", () => {
+		const prompt = buildBrowserRoutingAppendPrompt("chrome", "external");
+		expect(prompt).toContain("EXTERNAL browser");
+		expect(prompt).toContain("external browser-control MCP");
+		expect(prompt).toContain("built-in browser_* tools are disabled");
+	});
+
+	it("auto: presents both surfaces and tells the model to pick one", () => {
+		const prompt = buildBrowserRoutingAppendPrompt("built_in", "auto");
+		expect(prompt).toContain("Two browser control surfaces");
+		expect(prompt).toContain("Pick ONE surface");
+	});
+
+	it("defaults to the built_in policy when preference is omitted", () => {
+		expect(buildBrowserRoutingAppendPrompt("built_in")).toContain("you MUST use the browser_* tools");
 	});
 });

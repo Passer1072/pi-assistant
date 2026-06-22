@@ -48,6 +48,7 @@ import {
 	resolveDeepSeekApiConnection,
 } from "../shared/deepseek-connection.ts";
 import {
+	type AiBrowserPreference,
 	type ApiKeyValidationStatus,
 	type AppLaunchCacheView,
 	AUTOMATION_PERMISSION_MODES,
@@ -645,17 +646,27 @@ export class DesktopAgentService {
 		};
 	}
 
-	/** AI browser control is active → the built-in browser_* tools are the canonical control surface. */
+	/** AI browser control is on and the built-in browser host is wired. */
 	private aiBrowserControlActive(): boolean {
 		return this.settings.browser.allowAiControl && this.browserHost !== undefined;
 	}
 
+	/** Built-in browser_* tools are exposed (preference built_in or auto). */
+	private builtInBrowserToolsActive(): boolean {
+		return this.aiBrowserControlActive() && this.settings.browser.aiBrowserPreference !== "external";
+	}
+
+	/** The external browser-control MCP is suppressed (preference built_in only). */
+	private externalBrowserMcpSuppressed(): boolean {
+		return this.aiBrowserControlActive() && this.settings.browser.aiBrowserPreference === "built_in";
+	}
+
 	/** True unless this MCP tool is gated off (disabled Office capability, or a superseded browser MCP). */
 	private isMcpToolEnabled(name: string): boolean {
-		// When AI browser control is active, suppress any external browser-control MCP (mcp_browser_*).
-		// Its browser extension is NOT connected to the assistant's built-in browser, so the model would
-		// otherwise pick it (take_control/list_tabs/controlled_status) and fail. Force the browser_* tools.
-		if (this.aiBrowserControlActive() && isExternalBrowserControlToolName(name)) {
+		// With the "built_in" browser preference, suppress any external browser-control MCP (mcp_browser_*):
+		// its extension is NOT connected to the assistant's built-in browser, so the model would otherwise
+		// pick it (take_control/list_tabs/controlled_status) and fail. "external"/"auto" keep it available.
+		if (this.externalBrowserMcpSuppressed() && isExternalBrowserControlToolName(name)) {
 			return false;
 		}
 		for (const gate of OFFICE_MCP_TOOL_GATES) {
@@ -679,7 +690,7 @@ export class DesktopAgentService {
 		const tokenSavingTools = this.settings.tokenSaving.enabled
 			? createBrowserSnapshotReadTools(this.browserSnapshotStore)
 			: [];
-		const canRouteBrowser = this.settings.browser.allowAiControl && this.browserHost;
+		const canRouteBrowser = this.builtInBrowserToolsActive();
 		const desktopTools = createDesktopToolDefinitions({
 			host: this.options.host,
 			// Automation runs override the permission mode per their run policy; chat uses global settings.
@@ -708,7 +719,7 @@ export class DesktopAgentService {
 			network: this.settings.sandbox.enabled ? this.settings.sandbox.network : undefined,
 		});
 		const browserTools =
-			this.settings.browser.allowAiControl && this.browserHost ? createBrowserToolDefinitions(this.browserHost) : [];
+			this.builtInBrowserToolsActive() && this.browserHost ? createBrowserToolDefinitions(this.browserHost) : [];
 		return [
 			...mcpTools,
 			...tokenSavingTools,
@@ -724,7 +735,7 @@ export class DesktopAgentService {
 		return [
 			...this.activeMcpToolNames(),
 			...(this.settings.tokenSaving.enabled ? [...BROWSER_SNAPSHOT_READ_TOOL_NAMES] : []),
-			...(this.settings.browser.allowAiControl && this.browserHost ? [...BROWSER_TOOL_NAMES] : []),
+			...(this.builtInBrowserToolsActive() ? [...BROWSER_TOOL_NAMES] : []),
 			...getActiveDesktopToolNames(this.settings.capabilities),
 			...PERSONAL_SKILL_TOOL_NAMES,
 			...MEMO_TOOL_NAMES,
@@ -775,7 +786,12 @@ export class DesktopAgentService {
 						...(this.settings.mcp.enabled ? [buildMcpAppendPrompt(this.activeMcpToolNames())] : []),
 						...(this.settings.tokenSaving.enabled ? [buildTokenSavingAppendPrompt()] : []),
 						...(this.settings.browser.allowAiControl
-							? [buildBrowserRoutingAppendPrompt(this.settings.browser.defaultBrowser)]
+							? [
+									buildBrowserRoutingAppendPrompt(
+										this.settings.browser.defaultBrowser,
+										this.settings.browser.aiBrowserPreference,
+									),
+								]
 							: []),
 						buildSystemOperationAppendPrompt(skillFiles.system, this.settings.sandbox.enabled),
 						...(profile?.appendSystemPrompt ?? []),
@@ -2714,12 +2730,18 @@ export function normalizeBrowserSettings(update?: Partial<BrowserSettings>): Bro
 	return {
 		defaultBrowser: normalizeBrowserTarget(update?.defaultBrowser),
 		allowAiControl: update?.allowAiControl ?? d.allowAiControl,
+		aiBrowserPreference: normalizeAiBrowserPreference(update?.aiBrowserPreference, d.aiBrowserPreference),
 		homeUrl: normalizeBrowserHomeUrl(update?.homeUrl, d.homeUrl),
 		maxTabs: Math.round(clampNumber(update?.maxTabs, d.maxTabs, 1, 32)),
 		persistStorage: true,
 		searchTemplate: normalizeSearchTemplate(update?.searchTemplate, d.searchTemplate),
 		shortcuts: normalizeBrowserShortcuts(update?.shortcuts, d.shortcuts),
 	};
+}
+
+function normalizeAiBrowserPreference(value: unknown, fallback: AiBrowserPreference): AiBrowserPreference {
+	if (value === "built_in" || value === "external" || value === "auto") return value;
+	return fallback;
 }
 
 const MAX_BROWSER_SHORTCUTS = 24;

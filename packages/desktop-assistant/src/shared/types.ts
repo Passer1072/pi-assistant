@@ -91,6 +91,14 @@ export interface AutoTitleSettings {
 export type BrowserTarget = "built_in" | "chrome" | "edge";
 export type BrowserStorageClearScope = "cookies" | "cache" | "site_data" | "all";
 
+/**
+ * Which browser control surface the AI uses:
+ * - built_in: only the built-in browser_* tools (external browser-control MCP suppressed)
+ * - external: the external browser-control MCP (controls the user's native Chrome/Edge); built-in browser_* off
+ * - auto: both surfaces available; the model decides
+ */
+export type AiBrowserPreference = "built_in" | "external" | "auto";
+
 /** A user-defined quick-launch button on the built-in browser home page. */
 export interface BrowserShortcut {
 	id: string;
@@ -110,6 +118,8 @@ export interface BrowserHistoryEntry {
 export interface BrowserSettings {
 	defaultBrowser: BrowserTarget;
 	allowAiControl: boolean;
+	/** Which browser control surface the AI prefers: built-in tools, external MCP, or auto. */
+	aiBrowserPreference: AiBrowserPreference;
 	homeUrl: string;
 	maxTabs: number;
 	persistStorage: true;
@@ -2111,6 +2121,7 @@ export const DEFAULT_DESKTOP_ASSISTANT_SETTINGS: DesktopAssistantSettings = {
 	browser: {
 		defaultBrowser: "built_in",
 		allowAiControl: true,
+		aiBrowserPreference: "built_in",
 		homeUrl: "https://www.google.com",
 		maxTabs: 12,
 		persistStorage: true,

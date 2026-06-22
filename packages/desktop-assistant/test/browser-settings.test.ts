@@ -91,6 +91,15 @@ describe("normalizeBrowserSettings", () => {
 		expect(normalizeBrowserSettings({ shortcuts: many as never }).shortcuts).toHaveLength(24);
 	});
 
+	it("normalizes aiBrowserPreference, defaulting and rejecting invalid values", () => {
+		expect(normalizeBrowserSettings(undefined).aiBrowserPreference).toBe("built_in");
+		expect(normalizeBrowserSettings({ aiBrowserPreference: "external" }).aiBrowserPreference).toBe("external");
+		expect(normalizeBrowserSettings({ aiBrowserPreference: "auto" }).aiBrowserPreference).toBe("auto");
+		expect(normalizeBrowserSettings({ aiBrowserPreference: "firefox" as never }).aiBrowserPreference).toBe(
+			"built_in",
+		);
+	});
+
 	it("validates the search template, falling back when %s or scheme is missing", () => {
 		const d = DEFAULT_DESKTOP_ASSISTANT_SETTINGS.browser.searchTemplate;
 		expect(normalizeBrowserSettings({ searchTemplate: "https://duckduckgo.com/?q=%s" }).searchTemplate).toBe(
