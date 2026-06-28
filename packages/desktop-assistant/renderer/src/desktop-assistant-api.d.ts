@@ -189,6 +189,7 @@ interface DesktopAssistantApi {
 	abort(request?: AbortRequest): Promise<DesktopAssistantSnapshot>;
 	updateConversationThinking(request: ConversationThinkingUpdateRequest): Promise<DesktopAssistantSnapshot>;
 	updateApiKey(request: ApiKeyUpdateRequest): Promise<DesktopAssistantSnapshot>;
+	discoverModels(): Promise<DesktopAssistantSnapshot>;
 	updateSettings(request: SettingsUpdateRequest): Promise<DesktopAssistantSnapshot>;
 	refreshHomeWelcome(request?: RefreshHomeWelcomeRequest): Promise<void>;
 	getHomeWeather(): Promise<HomeWeatherView | undefined>;

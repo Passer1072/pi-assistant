@@ -359,6 +359,36 @@ describe("DeepSeek desktop defaults", () => {
 		}
 	});
 
+	it("stores API-discovered models in official mode too (not a hardcoded list)", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "desktop-assistant-official-models-"));
+		try {
+			const validateApiKey = vi.fn(async () => [
+				{ id: "deepseek-chat", label: "DeepSeek Chat" },
+				{ id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+			]);
+			const service = new DesktopAgentService({
+				cwd: process.cwd(),
+				agentDir,
+				host: new DryRunDesktopAutomationHost(),
+				settings: { ...DEFAULT_DESKTOP_ASSISTANT_SETTINGS, apiConnectionMode: "official" },
+				validateApiKey,
+			});
+
+			const snapshot = await service.updateApiKey("official-test-key");
+
+			expect(service.getAuthStorage().get(DEEPSEEK_OFFICIAL_AUTH_PROVIDER)).toMatchObject({
+				type: "api_key",
+				key: "official-test-key",
+			});
+			expect(snapshot.settings.deepseekRelayModels).toEqual([
+				{ id: "deepseek-chat", label: "DeepSeek Chat" },
+				{ id: "deepseek-reasoner", label: "DeepSeek Reasoner" },
+			]);
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
+	});
+
 	it("passes relay connection settings when saving API keys", async () => {
 		const agentDir = mkdtempSync(join(tmpdir(), "desktop-assistant-relay-auth-"));
 		try {

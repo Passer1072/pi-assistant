@@ -215,6 +215,7 @@ import {
 	DEEPSEEK_OFFICIAL_AUTH_PROVIDER,
 	DEEPSEEK_PROVIDER,
 	DEEPSEEK_RUNTIME_PROVIDER,
+	fetchDeepSeekRelayModels,
 	getConfiguredDeepSeekModel,
 	getDeepSeekAuthProvider,
 	getDeepSeekAuthStatus,
@@ -2097,7 +2098,10 @@ export class DesktopAgentService {
 				connection,
 				controller.signal,
 			);
-			if (connection.mode === "relay" && discoveredRelayModels) {
+			// Persist the API-discovered model list for both connection modes so the picker is
+			// never hardcoded. Keep the user's current model if the API still lists it; otherwise
+			// fall back to the preferred discovered model.
+			if (discoveredRelayModels && discoveredRelayModels.length > 0) {
 				const selectedRelayModel =
 					discoveredRelayModels.find((model) => model.id === this.settings.modelId) ??
 					selectPreferredRelayModel(discoveredRelayModels);
@@ -2150,6 +2154,46 @@ export class DesktopAgentService {
 		}
 		this.modelRegistry.refresh();
 		await this.applyConfiguredDeepSeekModel();
+		this.emit({ type: "snapshot", snapshot: this.snapshot() });
+		return this.snapshot();
+	}
+
+	/** Re-pull the model list from the configured endpoint using the stored API key, without re-validating. */
+	async discoverModels(): Promise<DesktopAssistantSnapshot> {
+		const authProvider = getDeepSeekAuthProvider(this.settings);
+		const stored = this.authStorage.get(authProvider);
+		const apiKey = stored?.type === "api_key" ? stored.key : undefined;
+		if (!apiKey) {
+			this.emit({ type: "snapshot", snapshot: this.snapshot() });
+			return this.snapshot();
+		}
+		const connection = resolveDeepSeekApiConnection(this.settings);
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 20000);
+		try {
+			const models = await fetchDeepSeekRelayModels(apiKey, connection, controller.signal);
+			if (models.length > 0) {
+				const selected =
+					models.find((model) => model.id === this.settings.modelId) ?? selectPreferredRelayModel(models);
+				this.settings = normalizeSettings({
+					...this.settings,
+					deepseekRelayModels: models,
+					modelId: selected?.id ?? this.settings.modelId,
+				});
+				this.settingsManager.applyOverrides({
+					defaultProvider:
+						this.settings.provider === DEEPSEEK_PROVIDER ? DEEPSEEK_RUNTIME_PROVIDER : this.settings.provider,
+					defaultModel: this.settings.modelId,
+					defaultThinkingLevel: this.settings.thinkingLevel,
+				});
+				this.modelRegistry.refresh();
+				await this.applyConfiguredDeepSeekModel();
+			}
+		} catch (error) {
+			this.context.archive.write("model_discovery_failed", { connection, error });
+		} finally {
+			clearTimeout(timeout);
+		}
 		this.emit({ type: "snapshot", snapshot: this.snapshot() });
 		return this.snapshot();
 	}

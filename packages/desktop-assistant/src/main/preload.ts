@@ -167,6 +167,7 @@ export interface DesktopAssistantApi {
 	abort(request?: AbortRequest): Promise<DesktopAssistantSnapshot>;
 	updateConversationThinking(request: ConversationThinkingUpdateRequest): Promise<DesktopAssistantSnapshot>;
 	updateApiKey(request: ApiKeyUpdateRequest): Promise<DesktopAssistantSnapshot>;
+	discoverModels(): Promise<DesktopAssistantSnapshot>;
 	updateSettings(request: SettingsUpdateRequest): Promise<DesktopAssistantSnapshot>;
 	refreshHomeWelcome(request?: RefreshHomeWelcomeRequest): Promise<void>;
 	getHomeWeather(): Promise<HomeWeatherView | undefined>;
@@ -340,6 +341,8 @@ const api: DesktopAssistantApi = {
 		) as Promise<DesktopAssistantSnapshot>,
 	updateApiKey: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.updateApiKey, request) as Promise<DesktopAssistantSnapshot>,
+	discoverModels: () =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.discoverModels) as Promise<DesktopAssistantSnapshot>,
 	updateSettings: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.updateSettings, request) as Promise<DesktopAssistantSnapshot>,
 	refreshHomeWelcome: (request) =>

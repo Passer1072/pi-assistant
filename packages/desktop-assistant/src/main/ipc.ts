@@ -467,6 +467,7 @@ export function registerDesktopAssistantIpc(params: {
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.updateApiKey, async (_event, request: ApiKeyUpdateRequest) =>
 		service.updateApiKey(request.apiKey),
 	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.discoverModels, async () => service.discoverModels());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.updateSettings, async (_event, request: SettingsUpdateRequest) => {
 		const settings = syncVoiceWakeWordUpdate(
 			request.settings,

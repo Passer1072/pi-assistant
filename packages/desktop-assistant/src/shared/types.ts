@@ -2874,6 +2874,7 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	abort: "desktop-assistant:abort",
 	updateConversationThinking: "desktop-assistant:update-conversation-thinking",
 	updateApiKey: "desktop-assistant:update-api-key",
+	discoverModels: "desktop-assistant:discover-models",
 	updateSettings: "desktop-assistant:update-settings",
 	refreshHomeWelcome: "desktop-assistant:refresh-home-welcome",
 	getHomeWeather: "desktop-assistant:get-home-weather",

@@ -197,8 +197,12 @@ export async function validateDeepSeekApiKey(
 	connection: DeepSeekApiConnection,
 	signal?: AbortSignal,
 ): Promise<DeepSeekRelayModelOption[] | undefined> {
+	// Relay must return a model list (we ping with one of them). Official is best-effort:
+	// we still pull /models so the picker isn't hardcoded, but a failure there must not fail validation.
 	const relayModels =
-		connection.mode === "relay" ? await fetchDeepSeekRelayModels(apiKey, connection, signal) : undefined;
+		connection.mode === "relay"
+			? await fetchDeepSeekRelayModels(apiKey, connection, signal)
+			: await fetchDeepSeekRelayModels(apiKey, connection, signal).catch(() => undefined);
 	const model =
 		connection.mode === "relay"
 			? selectPreferredRelayModel(relayModels ?? [])?.id
