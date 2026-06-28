@@ -71,3 +71,10 @@ conv_analysis2.txt
 
 # Generated binaries
 packages/coding-agent/binaries/
+
+# Error logs (runtime output)
+error_log/
+
+# Generated local Office add-in certificates
+packages/desktop-assistant/mcp-servers/office-addins/certs/*.pfx
+packages/desktop-assistant/mcp-servers/office-addins/certs/*.cer

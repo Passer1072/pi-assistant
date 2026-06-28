@@ -22,15 +22,21 @@ import type {
 	DesktopAssistantSettings,
 	DesktopAssistantSnapshot,
 	DesktopToolResult,
+	DynamicWindowSnapshot,
 	FileArtifact,
 	GlobalMemoryEntry,
+	LiveFlowSnapshot,
 	MessageTokenUsageView,
 	PendingConfirmation,
 	PendingPromptAttachment,
 	PersonalSkillFileView,
+	PromptAttachmentKind,
+	PromptDelivery,
+	QueuedPreInputView,
 	SessionNotificationKind,
 	SessionRunStatus,
 	SkillFileView,
+	SteeringLogEntry,
 	TimelineItem,
 	VoiceOverlayState,
 } from "../shared/types.ts";
@@ -44,10 +50,15 @@ import type {
 	ConversationArchiveRecord,
 	ConversationArchiveWriter,
 } from "./conversation-archive.ts";
+import { DynamicWindowSession } from "./dynamic-window-session.ts";
+import type { LiveFlowSession } from "./live-flow-session.ts";
+import { createLiveFlowToolDefinitions, LIVE_FLOW_TOOL_NAMES } from "./live-flow-tools.ts";
 import { buildMemoryContextBlock, type MemoryStore } from "./memory-store.ts";
 import { buildPersonalSkillRoutedPrompt } from "./personal-skill-repository.ts";
+import type { TurnToolError } from "./session-tools.ts";
 import { eventToTimelineItem } from "./timeline.ts";
 import {
+	applyFrozenFormsToMessages,
 	compactTokenSavingMessages,
 	type TokenSavingFrozenForms,
 	type TokenSavingTelemetry,
@@ -63,6 +74,15 @@ export const VOICE_INPUT_SKILL_NAME = "voice-input";
 export const HISTORY_INITIAL_MESSAGE_LIMIT = 30;
 export const HISTORY_INITIAL_TIMELINE_LIMIT = 20;
 export const HISTORY_PAGE_LIMIT = 30;
+// B2: bound the in-memory display arrays for very long live sessions. The full
+// conversation always stays in events.jsonl; messages trimmed out of memory
+// reload on scroll-up via loadConversationPage exactly like resumed history.
+// LIVE_MESSAGE_WINDOW is the size kept after a trim; the SLACK above it gives
+// hysteresis so the (archive-reread) trim runs at most once per SLACK messages
+// instead of every turn.
+export const LIVE_MESSAGE_WINDOW = 200;
+export const LIVE_MESSAGE_WINDOW_SLACK = 100;
+export const LIVE_TIMELINE_WINDOW = 200;
 const TOKEN_SAVING_FROZEN_FORMS_MAX = 64;
 const REDACTED_THINKING_PLACEHOLDER = "(thinking content was filtered for safety)";
 
@@ -87,10 +107,17 @@ export interface ContextSnapshotFragment {
 	messages: ChatMessageView[];
 	timeline: TimelineItem[];
 	pendingConfirmations: PendingConfirmation[];
+	queuedPreInputs: QueuedPreInputView[];
+	queuedSteeringMessages: string[];
+	steeringLog: SteeringLogEntry[];
 	conversationThinking: ConversationThinkingState;
 	historyWindow?: ConversationHistoryWindow;
 	lastInjectedMemoryCount: number;
 	contextUsage?: ConversationContextUsageView;
+	/** "实时流程化" working flow for this session; drives the floating window. */
+	liveFlow?: LiveFlowSnapshot;
+	/** 灵动窗 working state (files / web / commands facets) for this session. */
+	dynamicWindow?: DynamicWindowSnapshot;
 }
 
 /**
@@ -140,6 +167,14 @@ export interface ConversationContextDeps {
 export interface ConversationRuntimeProfile {
 	customTools?: ToolDefinition[];
 	activeToolNames?: string[];
+	/**
+	 * Tools to APPEND to the freshly-built default tool set (instead of replacing it
+	 * via customTools). Use this when extra tools must coexist with the live default
+	 * tools — e.g. the 实时流程化 tools on a normal chat — so the base set stays
+	 * up to date with host/capability changes.
+	 */
+	extraTools?: ToolDefinition[];
+	extraToolNames?: string[];
 	appendSystemPrompt?: string[];
 	skipSkillRouting?: boolean;
 	skipPersonalSkillRouting?: boolean;
@@ -182,6 +217,14 @@ export class ConversationContext {
 	private turnStartedAt = Date.now();
 	/** Canonical paths already surfaced as artifact cards this turn (dedupe across steps). */
 	private turnArtifactPaths = new Set<string>();
+	/** Tool failures observed this turn (user-rejection/abort excluded); read by session_info. */
+	private turnToolErrors: TurnToolError[] = [];
+	private turnUsedExternalContext = false;
+	private queuedPreInputs: QueuedPreInputView[] = [];
+	private queuedSteeringMessages: string[] = [];
+	private steeringLog: SteeringLogEntry[] = [];
+	private drainingQueuedPreInputs = false;
+	private currentRunEndedCleanly = false;
 	private streamingTextTimer: ReturnType<typeof setTimeout> | undefined;
 	private streamingThinkingTimer: ReturnType<typeof setTimeout> | undefined;
 	private pendingAssistantRunError:
@@ -215,16 +258,34 @@ export class ConversationContext {
 	private titleGenerationStarted = false;
 	private disposed = false;
 	private readonly profile: ConversationRuntimeProfile | undefined;
+	/** "实时流程化" working flow for this conversation (experiment only); drives the floating window. */
+	private readonly liveFlowSession: LiveFlowSession | undefined;
+	/** Live-flow tool defs (bound to liveFlowSession) re-appended on every tool refresh. */
+	private readonly liveFlowTools: ToolDefinition[];
+	private readonly liveFlowToolNames: string[];
+	/** 灵动窗 working state (files / web / commands facets) for this conversation. */
+	private readonly dynamicWindow = new DynamicWindowSession();
 	private static readonly STREAMING_THROTTLE_MS = 50;
 
 	constructor(
 		deps: ConversationContextDeps,
 		sessionManager: SessionManager,
-		options?: { archiveSessionId?: string; profile?: ConversationRuntimeProfile },
+		options?: {
+			archiveSessionId?: string;
+			profile?: ConversationRuntimeProfile;
+			liveFlowSession?: LiveFlowSession;
+		},
 	) {
 		this.deps = deps;
 		this.sessionManager = sessionManager;
 		this.profile = options?.profile;
+		this.liveFlowSession = options?.liveFlowSession;
+		this.liveFlowTools = this.liveFlowSession ? createLiveFlowToolDefinitions(this.liveFlowSession) : [];
+		this.liveFlowToolNames = this.liveFlowSession ? [...LIVE_FLOW_TOOL_NAMES] : [];
+		// Re-emit the snapshot whenever the live flow changes so the floating window updates.
+		this.liveFlowSession?.onChange(() => this.emitSnapshot());
+		// Re-emit whenever the 灵动窗 accumulates new file/web/command activity.
+		this.dynamicWindow.onChange(() => this.emitSnapshot());
 		this.archive = deps.coordinator.createWriter(
 			options?.archiveSessionId ?? sessionManager.getSessionId(),
 			sessionManager.getSessionFile(),
@@ -291,10 +352,18 @@ export class ConversationContext {
 		sessionId: string,
 		sessionFile: string,
 		openSessionManager: (sessionFile: string) => SessionManager,
-		options?: { sessionStartEvent?: SessionStartEvent },
+		options?: {
+			sessionStartEvent?: SessionStartEvent;
+			profile?: ConversationRuntimeProfile;
+			liveFlowSession?: LiveFlowSession;
+		},
 	): Promise<ConversationContext> {
 		const sessionManager = openSessionManager(sessionFile);
-		const context = new ConversationContext(deps, sessionManager, { archiveSessionId: sessionId });
+		const context = new ConversationContext(deps, sessionManager, {
+			archiveSessionId: sessionId,
+			profile: options?.profile,
+			liveFlowSession: options?.liveFlowSession,
+		});
 		await context.initializeRuntime({
 			skipBindArchiveWrite: true,
 			sessionStartEvent: options?.sessionStartEvent,
@@ -341,6 +410,19 @@ export class ConversationContext {
 				onAutoCompactionNeeded: (reason) => this.logTokenSavingCompactionCandidate(reason, transformed),
 			});
 			this.trimTokenSavingFrozenForms();
+			// B1: persist the already-applied old-window browser compaction back into
+			// the retained transcript. compactTokenSavingMessages above only builds the
+			// outbound copy (`compacted`); the heavy full DOM/HTML/screenshot payloads
+			// otherwise keep accumulating in `agent.state.messages` for the whole live
+			// session and drove the main-process OOM. Only frozen (out-of-recent-window)
+			// results are rewritten, so the bytes sent to the model stay byte-identical.
+			const agentState = this.session?.agent?.state;
+			if (agentState && Array.isArray(agentState.messages)) {
+				const rewritten = applyFrozenFormsToMessages(agentState.messages, this.tokenSavingFrozenForms);
+				if (rewritten > 0) {
+					this.archive.write("token_saving_state_compacted", { rewritten });
+				}
+			}
 			return compacted;
 		};
 		const basePrepareNextTurn = session.agent.prepareNextTurn;
@@ -513,9 +595,45 @@ export class ConversationContext {
 		if (timelineItem && timelineItem.kind !== "thinking_summary") {
 			this.pushTimeline(timelineItem);
 		}
+		if (event.type === "queue_update") {
+			const prevCount = this.queuedSteeringMessages.length;
+			const newCount = event.steering.length;
+			const consumed = prevCount - newCount;
+			if (consumed > 0) {
+				// Mark the first 'consumed' pending entries as applied (FIFO).
+				// Assign a display order so the bubble sorts into the right position in
+				// the conversation instead of always appearing at the bottom.
+				// Write a steer_prompt_applied record so the position survives a restart.
+				let markedCount = 0;
+				const now = Date.now();
+				this.steeringLog = this.steeringLog.map((entry) => {
+					if (entry.status === "pending" && markedCount < consumed) {
+						markedCount++;
+						const order = this.consumeDisplayOrder();
+						const applied: SteeringLogEntry = {
+							...entry,
+							status: "applied" as const,
+							appliedAt: now,
+							order,
+						};
+						this.archive.write("steer_prompt_applied", {
+							id: applied.id,
+							text: applied.text,
+							appliedAt: applied.appliedAt,
+							order: applied.order,
+						});
+						return applied;
+					}
+					return entry;
+				});
+			}
+			this.queuedSteeringMessages = [...event.steering];
+			this.emitSnapshot();
+		}
 		if (event.type === "tool_execution_start") {
 			// End events drop args, so stash them here for artifact extraction.
 			this.pendingToolArgs.set(event.toolCallId, event.args);
+			this.turnUsedExternalContext = this.turnUsedExternalContext || isExternalContextTool(event.toolName);
 			this.streamingText = "";
 			// The reasoning that led to this tool call was already committed as its own
 			// thinking box at the preceding message_end, so nothing to carry over here.
@@ -530,6 +648,14 @@ export class ConversationContext {
 			if (!event.isError) {
 				this.surfaceToolArtifacts(event.toolCallId, event.toolName, event.result);
 			}
+			// Feed the 灵动窗 regardless of isError, so a failed command's stderr still surfaces.
+			this.dynamicWindow.recordTool(event.toolName, this.pendingToolArgs.get(event.toolCallId), event.result, {
+				toolCallId: event.toolCallId,
+				baseDir: this.deps.cwd,
+				turnStartedAt: this.turnStartedAt,
+				label: parseDesktopToolResult(event.result)?.intent ?? event.toolName,
+			});
+			this.recordTurnToolError(event.toolName, event.isError, event.result, wasBlocked);
 			this.pendingToolArgs.delete(event.toolCallId);
 		}
 		if (event.type === "message_update") {
@@ -576,6 +702,9 @@ export class ConversationContext {
 			this.commitThinkingSegment();
 			const text = extractLatestAssistantTextFromAgentMessages(event.messages);
 			const turnTokenUsage = tokenUsageFromAgentMessages(event.messages);
+			const assistantRunError = !event.willRetry
+				? (this.pendingAssistantRunError ?? extractLatestAssistantRunError(event.messages))
+				: undefined;
 			this.streamingText = "";
 			if (text && !this.hasRecentAssistantMessage(text)) {
 				this.pendingAssistantRunError = undefined;
@@ -585,13 +714,14 @@ export class ConversationContext {
 				});
 			} else if (!event.willRetry) {
 				this.updateLatestAssistantTurnTokenUsage(turnTokenUsage);
-				const pendingError = this.pendingAssistantRunError ?? extractLatestAssistantRunError(event.messages);
-				if (pendingError) {
-					this.pushAssistantRunError(pendingError.errorMessage, pendingError.stopReason);
+				if (assistantRunError) {
+					this.pushAssistantRunError(assistantRunError.errorMessage, assistantRunError.stopReason);
 					this.pendingAssistantRunError = undefined;
 				}
 			}
 			if (!event.willRetry) {
+				this.currentRunEndedCleanly =
+					!assistantRunError && !this.confirmationAborted && this.pendingConfirmations.length === 0;
 				this.extractMemoriesFromLatestTurn();
 				void this.maybeGenerateConversationTitle();
 				// A background run just finished — flag it for the blue dot until the
@@ -625,12 +755,22 @@ export class ConversationContext {
 		message: string,
 		source: "text" | "voice" | "automation" = "text",
 		attachments: PendingPromptAttachment[] = [],
+		delivery: PromptDelivery = "prompt",
 	): Promise<void> {
 		if (!this.session) {
 			throw new Error("Conversation session is not initialized.");
 		}
+		if (delivery === "preInput" && this.isBusy) {
+			this.queuePreInput(message);
+			return;
+		}
+		if (delivery === "steer" && this.isBusy) {
+			await this.steer(message);
+			return;
+		}
 		this.lastError = undefined;
 		this.setBusy(true);
+		this.currentRunEndedCleanly = false;
 		if (source === "voice") {
 			this.deps.updateVoiceOverlay({ visible: true, state: "transcribing", transcript: message });
 		}
@@ -639,11 +779,18 @@ export class ConversationContext {
 		// Reset per-turn artifact tracking so output-file cards reflect this turn only.
 		this.turnStartedAt = Date.now();
 		this.turnArtifactPaths.clear();
+		this.turnToolErrors = [];
+		this.turnUsedExternalContext = attachments.length > 0;
 
 		// Push the user's original message immediately so the chat bubble shows
 		// clean text. The session receives the skill-routed prompt internally but
 		// we never show that injected XML to the user.
-		this.pushMessage("user", message);
+		this.pushMessage("user", message, {
+			attachments:
+				attachments.length > 0
+					? attachments.map(({ name, kind, sizeBytes }) => ({ name, kind, sizeBytes }))
+					: undefined,
+		});
 
 		try {
 			const attachmentBlock = await buildAttachmentPromptBlock(attachments, this.deps.host);
@@ -694,13 +841,94 @@ export class ConversationContext {
 			await this.session.prompt(promptWithMemory, { source: this.profile?.agentSource ?? "interactive" });
 			this.archive.syncSessionFileMirror();
 		} finally {
+			const shouldDrainQueuedPreInputs = this.currentRunEndedCleanly;
 			this.setBusy(false);
 			// Await archive flush so tests and callers that await prompt() see up-to-date files.
 			await this.archive.flushSnapshots();
+			if (shouldDrainQueuedPreInputs) {
+				await this.drainQueuedPreInputs();
+			}
+			// B2: bound the live display arrays once the session is idle again.
+			await this.trimLiveDisplayHistoryIfNeeded();
+		}
+	}
+
+	queuePreInput(text: string): QueuedPreInputView {
+		const queued: QueuedPreInputView = {
+			id: randomUUID(),
+			text,
+			createdAt: Date.now(),
+			sessionId: this.sessionId,
+		};
+		this.queuedPreInputs = [...this.queuedPreInputs, queued];
+		this.archive.write("pre_input_queued", queued);
+		this.emitSnapshot();
+		return queued;
+	}
+
+	deleteQueuedPreInput(id: string): boolean {
+		const before = this.queuedPreInputs.length;
+		this.queuedPreInputs = this.queuedPreInputs.filter((item) => item.id !== id);
+		const deleted = this.queuedPreInputs.length !== before;
+		if (deleted) {
+			this.archive.write("pre_input_deleted", { id });
+			this.emitSnapshot();
+		}
+		return deleted;
+	}
+
+	withdrawQueuedPreInput(id: string): QueuedPreInputView | undefined {
+		const queued = this.queuedPreInputs.find((item) => item.id === id);
+		if (!queued) return undefined;
+		this.queuedPreInputs = this.queuedPreInputs.filter((item) => item.id !== id);
+		this.archive.write("pre_input_withdrawn", { id });
+		this.emitSnapshot();
+		return queued;
+	}
+
+	private async steer(message: string): Promise<void> {
+		if (!this.session) {
+			throw new Error("Conversation session is not initialized.");
+		}
+		const entry: SteeringLogEntry = {
+			id: randomUUID(),
+			text: message,
+			status: "pending",
+			queuedAt: Date.now(),
+		};
+		this.steeringLog = [...this.steeringLog, entry];
+		this.archive.write("steer_prompt_queued", {
+			message,
+			sessionId: this.sessionId,
+		});
+		this.emitSnapshot();
+		await this.session.prompt(message, {
+			source: this.profile?.agentSource ?? "interactive",
+			streamingBehavior: "steer",
+		});
+		await this.archive.flushSnapshots();
+		this.emitSnapshot();
+	}
+
+	private async drainQueuedPreInputs(): Promise<void> {
+		if (this.drainingQueuedPreInputs || this.isBusy || this.pendingConfirmations.length > 0 || this.lastError) return;
+		this.drainingQueuedPreInputs = true;
+		try {
+			while (!this.isBusy && this.pendingConfirmations.length === 0 && !this.lastError) {
+				const next = this.queuedPreInputs.shift();
+				if (!next) break;
+				this.archive.write("pre_input_consumed", next);
+				this.emitSnapshot();
+				await this.prompt(next.text, "text", [], "prompt");
+				if (!this.currentRunEndedCleanly) break;
+			}
+		} finally {
+			this.drainingQueuedPreInputs = false;
 		}
 	}
 
 	abort(): void {
+		this.currentRunEndedCleanly = false;
 		this.flushStreamingText();
 		this.streamingText = "";
 		// Preserve the interrupted reasoning as its own box rather than dropping it.
@@ -851,8 +1079,14 @@ export class ConversationContext {
 	refreshTools(customTools: Parameters<AgentSession["setCustomTools"]>[0], activeNames: string[]): void {
 		if (!this.session) return;
 		try {
-			this.session.setCustomTools(customTools);
-			this.session.setActiveToolsByName(activeNames);
+			// Re-append this conversation's live-flow tools so a global refresh (capability /
+			// web-search change) never strips them from an active 实时流程化 session.
+			this.session.setCustomTools(
+				this.liveFlowTools.length > 0 ? [...customTools, ...this.liveFlowTools] : customTools,
+			);
+			this.session.setActiveToolsByName(
+				this.liveFlowToolNames.length > 0 ? [...activeNames, ...this.liveFlowToolNames] : activeNames,
+			);
 		} catch {
 			// Ignore if session not ready.
 		}
@@ -883,10 +1117,15 @@ export class ConversationContext {
 			messages: this.messages,
 			timeline: this.timeline,
 			pendingConfirmations: this.pendingConfirmations,
+			queuedPreInputs: this.queuedPreInputs,
+			queuedSteeringMessages: this.queuedSteeringMessages,
+			steeringLog: this.steeringLog,
 			conversationThinking: this.conversationThinking,
 			historyWindow: this.historyWindow,
 			lastInjectedMemoryCount: this.lastInjectedMemoryCount,
 			contextUsage: this.contextUsage(),
+			liveFlow: this.liveFlowSession?.getState(),
+			dynamicWindow: this.dynamicWindow.getState(),
 		};
 	}
 
@@ -971,6 +1210,29 @@ export class ConversationContext {
 		return true;
 	}
 
+	/**
+	 * Record a tool failure for the error-self-summary experiment. Counts a real
+	 * tool error (the call threw) or a successful call whose result reports failure
+	 * (status=failed or non-empty stderr). User-driven outcomes are excluded:
+	 * `wasBlocked` (awaiting confirmation) and status "blocked" never count.
+	 */
+	private recordTurnToolError(toolName: string, isError: boolean, result: unknown, wasBlocked: boolean): void {
+		if (wasBlocked) return;
+		const details = parseDesktopToolResult(result);
+		if (details?.status === "blocked") return;
+		const stderr = details?.stderr?.trim();
+		const failed = isError || details?.status === "failed" || Boolean(stderr);
+		if (!failed) return;
+		if (this.turnToolErrors.length >= 50) return;
+		const message = (stderr || details?.intent || "工具调用失败").slice(0, 300);
+		this.turnToolErrors.push({ toolName, message });
+	}
+
+	/** Tool failures observed in the current turn (newest run wins; cleared at each prompt). */
+	getRecentToolErrors(): TurnToolError[] {
+		return [...this.turnToolErrors];
+	}
+
 	private async continueAfterApprovals(
 		results: Array<{ confirmation: PendingConfirmation; commandResult: { stdout: string; stderr: string } }>,
 	): Promise<void> {
@@ -1013,6 +1275,7 @@ export class ConversationContext {
 		this.messages = page.messages;
 		this.timeline = page.timeline;
 		this.pendingConfirmations = source.pendingConfirmations;
+		this.steeringLog = source.steeringLog;
 		this.historyWindow = {
 			sessionId,
 			hasMoreBefore: page.hasMoreBefore,
@@ -1031,6 +1294,46 @@ export class ConversationContext {
 		this.lastTokenSavingCompactionBrowserChars = this.session
 			? estimateBrowserToolHistoryChars(this.session.sessionManager.buildSessionContext().messages)
 			: 0;
+	}
+
+	/**
+	 * B2: cap the in-memory display arrays for a very long live session by
+	 * re-seeding them from the on-disk archive (the same reconstruction used to
+	 * resume history). This is intentionally NOT a naive front-trim of
+	 * `this.messages`: live items carry `consumeDisplayOrder` order values while
+	 * the archive pages by `record.sequence`, so dropping items in place would
+	 * break `loadConversationPage` reload. Reusing the resume reconstruction
+	 * re-seeds everything into archive (sequence) order space and sets
+	 * `historyWindow`, so scroll-up reload works identically to resumed history.
+	 *
+	 * Only runs at a safe idle point (no active run / stream / pending approval),
+	 * and only when sufficiently over the window (hysteresis), so the archive
+	 * re-read is amortized and never interrupts a turn or moves the user's view
+	 * (the thread is anchored at the bottom when a turn completes).
+	 */
+	private async trimLiveDisplayHistoryIfNeeded(): Promise<void> {
+		if (this.messages.length <= LIVE_MESSAGE_WINDOW + LIVE_MESSAGE_WINDOW_SLACK) return;
+		if (this.isBusy || this.pendingConfirmations.length > 0 || this.streamingText || this.streamingThinking) return;
+		await this.archive.flushSnapshots();
+		const source = readHistoryDisplaySource(this.deps.coordinator, this.sessionId);
+		const page = sliceHistoryDisplayItems(source, {
+			messageLimit: LIVE_MESSAGE_WINDOW,
+			timelineLimit: LIVE_TIMELINE_WINDOW,
+		});
+		// Only adopt the rebuilt window if the archive actually reconstructs the
+		// recent tail; otherwise keep the live arrays untouched (no data loss).
+		if (page.messages.length < LIVE_MESSAGE_WINDOW) return;
+		this.messages = page.messages;
+		this.timeline = page.timeline;
+		this.steeringLog = source.steeringLog;
+		this.historyWindow = {
+			sessionId: this.sessionId,
+			hasMoreBefore: page.hasMoreBefore,
+			oldestOrder: page.oldestOrder,
+			loadedFrom: source.loadedFrom,
+		};
+		this.nextDisplayOrder = source.nextDisplayOrder;
+		this.emitSnapshot();
 	}
 
 	// ── Memory ────────────────────────────────────────────────────────────────
@@ -1053,15 +1356,19 @@ export class ConversationContext {
 		if (!settings.memory.enabled || !settings.memory.autoExtract) return;
 		const latestUserMessage = findLatestMessageText(this.messages, "user");
 		if (!latestUserMessage) return;
+		if (this.turnUsedExternalContext && !settings.memory.allowExternalContextExtraction) return;
 		const latestAssistantMessage = findLatestMessageText(this.messages, "assistant");
 		const candidates = this.deps.memoryStore.extractFromTurn({
 			userMessage: latestUserMessage,
-			assistantMessage: latestAssistantMessage,
+			assistantMessage: settings.memory.allowAssistantDerivedFacts ? latestAssistantMessage : undefined,
 			sourceSessionId: this.session?.sessionId,
+			includeAssistantDerivedFacts: settings.memory.allowAssistantDerivedFacts,
 		});
 		for (const candidate of candidates) {
 			this.deps.memoryStore.upsert({
 				...candidate,
+				scope: candidate.scope ?? "workspace",
+				source: "auto",
 				sourceSessionId: this.session?.sessionId,
 			});
 		}
@@ -1206,7 +1513,12 @@ export class ConversationContext {
 	pushMessage(
 		role: ChatMessageView["role"],
 		text: string,
-		options: { tokenUsage?: MessageTokenUsageView; turnTokenUsage?: MessageTokenUsageView; thinking?: string } = {},
+		options: {
+			tokenUsage?: MessageTokenUsageView;
+			turnTokenUsage?: MessageTokenUsageView;
+			thinking?: string;
+			attachments?: ChatMessageView["attachments"];
+		} = {},
 	): void {
 		const timestamp = Date.now();
 		this.lastActivityAt = timestamp;
@@ -1228,6 +1540,7 @@ export class ConversationContext {
 				order: this.consumeDisplayOrder(),
 				tokenUsage: options.tokenUsage,
 				turnTokenUsage: options.turnTokenUsage,
+				attachments: options.attachments,
 			},
 		];
 		this.emitSnapshot();
@@ -1508,6 +1821,20 @@ export function normalizeMemoryLimit(value: number | undefined): number {
 	return Math.min(20, Math.max(0, Math.floor(value)));
 }
 
+function isExternalContextTool(toolName: string): boolean {
+	const lower = toolName.toLowerCase();
+	return (
+		lower.startsWith("mcp_") ||
+		lower.startsWith("web_") ||
+		lower.startsWith("browser_") ||
+		lower.startsWith("app_") ||
+		lower.startsWith("email_") ||
+		lower.startsWith("ebook_") ||
+		lower.startsWith("office_") ||
+		lower.includes("_mcp_")
+	);
+}
+
 export function createConversationThinkingFromDefault(
 	level: DesktopAssistantSettings["thinkingLevel"],
 	supported: boolean,
@@ -1712,6 +2039,7 @@ export interface HistoryDisplaySource {
 	messages: ChatMessageView[];
 	timeline: TimelineItem[];
 	pendingConfirmations: PendingConfirmation[];
+	steeringLog: SteeringLogEntry[];
 	nextDisplayOrder: number;
 	loadedFrom: ConversationHistoryLoadSource;
 }
@@ -1795,6 +2123,7 @@ export function readHistoryDisplaySource(
 		messages: [],
 		timeline: [],
 		pendingConfirmations: [],
+		steeringLog: [],
 		nextDisplayOrder: 1,
 		loadedFrom: "conversation",
 	};
@@ -1903,11 +2232,41 @@ function buildHistoryDisplaySourceFromArchive(
 			}
 		}
 	}
+	// Restore the pinned automation flowchart panel. The single `flowchart` item is
+	// re-pushed (same id) throughout the run, so keep the latest payload per id. Using
+	// the record sequence as its order keeps it inside the initial timeline window; it
+	// renders pinned (excluded from the inline list) so the order never affects layout.
+	const latestFlowchart = new Map<string, { order: number; item: TimelineItem }>();
+	for (const entry of archive.timeline ?? []) {
+		const payload = entry.payload as { timelineItem?: TimelineItem } | null | undefined;
+		const item = payload?.timelineItem;
+		if (!item || item.kind !== "flowchart" || !item.flowGraph) continue;
+		const existing = latestFlowchart.get(item.id);
+		if (!existing || entry.sequence >= existing.order) {
+			latestFlowchart.set(item.id, { order: entry.sequence, item });
+		}
+	}
+	for (const { order, item } of latestFlowchart.values()) {
+		upsertRestoredTimelineItem(timeline, {
+			...item,
+			order,
+			timestamp: typeof item.timestamp === "number" ? item.timestamp : Date.parse(archive.updatedAt) || Date.now(),
+		});
+	}
 	timeline.sort((left, right) => left.order - right.order);
+	const steeringLog: SteeringLogEntry[] = (archive.steeringEntries ?? []).map((entry) => ({
+		id: entry.id,
+		text: entry.text,
+		status: "applied" as const,
+		queuedAt: entry.appliedAt,
+		appliedAt: entry.appliedAt,
+		order: entry.order,
+	}));
 	return {
 		messages,
 		timeline,
 		pendingConfirmations: [],
+		steeringLog,
 		nextDisplayOrder:
 			Math.max(0, ...messages.map((message) => message.order), ...timeline.map((item) => item.order)) + 1,
 		loadedFrom,
@@ -2042,6 +2401,7 @@ function rebuildArchiveStateFromRecords(
 	messages: ChatMessageView[];
 	timeline: TimelineItem[];
 	pendingConfirmations: PendingConfirmation[];
+	steeringLog: SteeringLogEntry[];
 	nextDisplayOrder: number;
 } {
 	const messages: ChatMessageView[] = [];
@@ -2052,6 +2412,7 @@ function rebuildArchiveStateFromRecords(
 	// message_end arrives, so it interleaves correctly with the tool calls.
 	let currentThinking: { firstSequence: number; parts: string[] } | undefined;
 	let pendingConfirmations: PendingConfirmation[] = [];
+	const steeringLog: SteeringLogEntry[] = [];
 	const restoredArtifactPaths = new Set<string>();
 
 	const commitThinkingSegment = (authoritativeText: string | undefined, fallbackOrder: number, ts: number): void => {
@@ -2075,12 +2436,15 @@ function rebuildArchiveStateFromRecords(
 		if (record.kind === "user_prompt_received") {
 			const message = getStringFieldFromRecord(record.payload, "message");
 			if (message) {
+				const rawAttachments = getNestedFieldFromRecord(record.payload, ["attachments"]);
+				const attachments = parseAttachmentsFromRecord(rawAttachments);
 				messages.push({
 					id: `${sessionId}-msg-${record.sequence}`,
 					role: "user",
 					text: message,
 					timestamp,
 					order: record.sequence,
+					attachments: attachments.length > 0 ? attachments : undefined,
 				});
 			}
 			continue;
@@ -2250,6 +2614,10 @@ function rebuildArchiveStateFromRecords(
 				if (item?.kind === "compaction") {
 					upsertRestoredTimelineItem(timeline, { ...item, order: record.sequence });
 				}
+				if (item?.kind === "flowchart" && item.flowGraph) {
+					// Pinned automation flowchart panel — keep the latest (same id re-upserts).
+					upsertRestoredTimelineItem(timeline, { ...item, order: record.sequence });
+				}
 				// "thinking" timeline items are also archived here, but we rebuild them from
 				// the thinking deltas above (ordered by their first delta's sequence so they
 				// land before the step's answer), so restoring them here would duplicate.
@@ -2303,6 +2671,27 @@ function rebuildArchiveStateFromRecords(
 				order: record.sequence,
 			});
 		}
+
+		if (record.kind === "steer_prompt_applied") {
+			const payload = record.payload as Record<string, unknown>;
+			const id = typeof payload.id === "string" ? payload.id : undefined;
+			const text = typeof payload.text === "string" ? payload.text : undefined;
+			const appliedAt = typeof payload.appliedAt === "number" ? payload.appliedAt : undefined;
+			const order = typeof payload.order === "number" ? payload.order : undefined;
+			if (id && text && appliedAt !== undefined && order !== undefined) {
+				// Dedupe by id in case the record appears twice.
+				if (!steeringLog.some((e) => e.id === id)) {
+					steeringLog.push({
+						id,
+						text,
+						status: "applied",
+						queuedAt: appliedAt,
+						appliedAt,
+						order,
+					});
+				}
+			}
+		}
 	}
 
 	const nextDisplayOrder =
@@ -2311,6 +2700,7 @@ function rebuildArchiveStateFromRecords(
 		messages,
 		timeline,
 		pendingConfirmations,
+		steeringLog,
 		nextDisplayOrder,
 	};
 }
@@ -2497,6 +2887,7 @@ function parseTimelineItemFromRecord(value: unknown): TimelineItem | undefined {
 		timestamp: item.timestamp,
 		order: item.order,
 		toolCallId: typeof item.toolCallId === "string" ? item.toolCallId : undefined,
+		flowGraph: item.flowGraph,
 	};
 }
 
@@ -2511,7 +2902,8 @@ function isTimelineKind(value: string): value is TimelineItem["kind"] {
 		value === "voice" ||
 		value === "retry" ||
 		value === "error" ||
-		value === "compaction"
+		value === "compaction" ||
+		value === "flowchart"
 	);
 }
 
@@ -2528,4 +2920,21 @@ function isAutomationStatus(value: string): value is TimelineItem["status"] {
 
 function parseAutomationRiskLevel(value: unknown): AutomationRiskLevel | undefined {
 	return value === "low" || value === "medium" || value === "high" ? value : undefined;
+}
+
+function parseAttachmentsFromRecord(
+	value: unknown,
+): Array<{ name: string; kind?: PromptAttachmentKind; sizeBytes: number }> {
+	if (!Array.isArray(value)) return [];
+	const result: Array<{ name: string; kind?: PromptAttachmentKind; sizeBytes: number }> = [];
+	for (const item of value) {
+		if (typeof item !== "object" || item === null) continue;
+		const record = item as Record<string, unknown>;
+		const name = typeof record.name === "string" ? record.name : undefined;
+		if (!name) continue;
+		const sizeBytes = typeof record.sizeBytes === "number" ? record.sizeBytes : 0;
+		const kind = typeof record.kind === "string" ? (record.kind as PromptAttachmentKind) : undefined;
+		result.push({ name, kind, sizeBytes });
+	}
+	return result;
 }

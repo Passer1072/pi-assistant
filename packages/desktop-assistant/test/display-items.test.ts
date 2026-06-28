@@ -47,7 +47,9 @@ describe("buildDisplayItems", () => {
 			items.map((item) =>
 				item.kind === "message"
 					? `${item.message.order}:${item.message.role}`
-					: `${item.item.order}:${item.item.title}`,
+					: item.kind === "steering"
+						? `${item.item.order}:steering`
+						: `${item.item.order}:${item.item.title}`,
 			),
 		).toEqual(["1:user", "2:Tool started: open_app", "3:Tool finished: open_app", "4:assistant"]);
 	});
@@ -130,7 +132,9 @@ describe("buildDisplayItems", () => {
 			items.map((item) =>
 				item.kind === "message"
 					? `msg:${item.message.role}`
-					: `${item.kind}:${item.kind === "thinking" ? item.item.detail : item.item.title}`,
+					: item.kind === "steering"
+						? `steering:${item.item.text}`
+						: `${item.kind}:${item.kind === "thinking" ? item.item.detail : item.item.title}`,
 			),
 		).toEqual([
 			"msg:user",

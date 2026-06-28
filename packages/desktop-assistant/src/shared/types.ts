@@ -88,6 +88,54 @@ export interface AutoTitleSettings {
 	enabled: boolean;
 }
 
+export interface HomeWelcomeSettings {
+	/** Generate the home greeting with the model (off → static fallback greeting). */
+	enabled: boolean;
+	/** Best-effort weather glance; requires a WeatherAPI.com API key. */
+	includeWeather: boolean;
+	/** WeatherAPI.com key (https://www.weatherapi.com/). When absent, weather is skipped. */
+	weatherApiKey?: string;
+	/** Best-effort unread glance, only when the email app is already running. */
+	includeEmail: boolean;
+}
+
+/** User-tunable persona/locale, injected into the main chat system prompt and home greeting. */
+export interface PersonalizationSettings {
+	/** Master switch — off keeps the default 「小派」 persona untouched. */
+	enabled: boolean;
+	/** Speaking tone: a preset label (e.g. 「友好亲切」) or free-form custom text. */
+	tone?: string;
+	/** Role/character the assistant plays, e.g. 「资深程序员」「贴心助理」. */
+	rolePlay?: string;
+	/** How the assistant addresses the user, e.g. 「主人」「老板」 or a name. */
+	userAddressing?: string;
+	/** Whether the user's location is typed in or auto-detected from WeatherAPI auto:ip. */
+	locationMode: "manual" | "auto";
+	/** Manually entered location (used when locationMode === "manual"). */
+	manualLocation?: string;
+}
+
+/**
+ * Opt-in experimental features. Each flag is off by default. Kept as a nested
+ * object so new experiments can be added without touching the top-level settings
+ * shape (mirrors how {@link DEFAULT_DESKTOP_ASSISTANT_SETTINGS} groups others).
+ */
+export interface ExperimentalSettings {
+	/**
+	 * "模型自动总结改进方案"：开启后，模型在某一轮里调用工具遇到真实困难
+	 * （工具调用失败，或工具成功但返回内容含报错）时，会在答完该轮后自动做一次
+	 * 流程回顾自我总结，并通过 memo_create 记成一条备忘录，便于交给 Claude/ChatGPT 分析修复。
+	 */
+	errorSelfSummary: { enabled: boolean };
+	/**
+	 * "实时流程化"：开启后，模型在普通会话收到多步骤、有明确执行步骤的任务时，
+	 * 先用 flow_plan 设计一张流程图（不确定时先调研清楚再画），用右下角可拖动/可折叠
+	 * 的浮窗展示，再照流程图逐步执行（每步 flow_step done 的结果会回传下一步），
+	 * 中途遇到问题就 flow_plan 重画反映方案后继续。
+	 */
+	liveFlow: { enabled: boolean };
+}
+
 export type BrowserTarget = "built_in" | "chrome" | "edge";
 export type BrowserStorageClearScope = "cookies" | "cache" | "site_data" | "all";
 
@@ -98,6 +146,14 @@ export type BrowserStorageClearScope = "cookies" | "cache" | "site_data" | "all"
  * - auto: both surfaces available; the model decides
  */
 export type AiBrowserPreference = "built_in" | "external" | "auto";
+
+/**
+ * Which Office control surface the AI uses:
+ * - live: Office add-in MCP tools edit the currently open visible document
+ * - file: file/COM tools operate on closed files or hidden Office instances
+ * - auto: both surfaces are available; the model chooses one
+ */
+export type AiOfficePreference = "live" | "file" | "auto";
 
 /** A user-defined quick-launch button on the built-in browser home page. */
 export interface BrowserShortcut {
@@ -127,6 +183,10 @@ export interface BrowserSettings {
 	shortcuts: BrowserShortcut[];
 	/** Search URL template with a "%s" placeholder for omnibox/home-page searches. */
 	searchTemplate: string;
+}
+
+export interface OfficeSettings {
+	aiOfficePreference: AiOfficePreference;
 }
 
 export interface BrowserTabView {
@@ -345,6 +405,125 @@ export interface BuiltInBrowserEvent {
 	status: BuiltInBrowserStatus;
 }
 
+// ── More Apps (integrated external local web apps) ────────────────────────────
+// Each "app" is a local web service (Flask / FastAPI …) that the assistant
+// spawns as a child process and shows in its own window, and that the AI drives
+// over HTTP. See main/external-app-controller.ts and agent/app-bridge-tools.ts.
+
+/** Lifecycle status of an integrated external app. */
+export type ExternalAppStatus = "stopped" | "starting" | "running" | "error";
+
+/** AI-bridge config: how the agent reaches an app's HTTP API. */
+export interface ExternalAppAiConfig {
+	/** Base path prefixed to bridge calls, e.g. "/api/v1". */
+	basePath: string;
+	/** Allowed path prefixes (relative to the app root) the generic app_call may hit. */
+	allowPrefixes: string[];
+}
+
+/**
+ * Declarative manifest describing how to launch & reach an external local web app.
+ * The literal token "{port}" inside args / env values / urlPattern is replaced
+ * with the resolved port at launch time.
+ */
+export interface ExternalAppManifest {
+	id: string;
+	name: string;
+	description?: string;
+	/** Icon: an emoji or a packaged-asset / data / file URL. */
+	icon: string;
+	/** Working directory for the spawned process. */
+	cwd: string;
+	/** Executable to spawn (absolute path or a command on PATH). */
+	command: string;
+	args: string[];
+	env?: Record<string, string>;
+	/** Fixed port; when omitted a free port is allocated at start. */
+	port?: number;
+	/** URL loaded in the app window, e.g. "http://127.0.0.1:{port}/". */
+	urlPattern: string;
+	/** Path probed for readiness (expects a response). Defaults to "/". */
+	healthPath: string;
+	/** Auto-start this app when the assistant launches. */
+	autoStart: boolean;
+	/** Stop the app after this many minutes of inactivity (0 / undefined = disabled). */
+	idleTimeoutMinutes?: number;
+	/** Shipped manifest (true) vs user-added (false/undefined). */
+	builtIn?: boolean;
+	/** Present when the app exposes an AI-callable HTTP API. */
+	ai?: ExternalAppAiConfig;
+}
+
+/** User-editable per-app overrides, persisted to agentDir/more-apps.json. */
+export interface ExternalAppConfig {
+	autoStart?: boolean;
+	port?: number;
+	/** Stop after this many minutes of inactivity (0 = disabled). */
+	idleTimeoutMinutes?: number;
+	/** Advanced overrides. */
+	command?: string;
+	args?: string[];
+	env?: Record<string, string>;
+}
+
+/** Renderer-facing runtime view of an external app. */
+export interface MoreAppView {
+	id: string;
+	name: string;
+	description?: string;
+	icon: string;
+	status: ExternalAppStatus;
+	autoStart: boolean;
+	builtIn: boolean;
+	/** Resolved port once running. */
+	port?: number;
+	/** URL currently served once running. */
+	url?: string;
+	/** Whether the app's window is currently open. */
+	windowOpen: boolean;
+	/** Last error message when status === "error". */
+	error?: string;
+	/** Whether AI tools are wired for this app (manifest has `ai`). */
+	aiEnabled: boolean;
+	/** The launch command line, shown read-only in settings. */
+	commandLine: string;
+	/** Minutes of inactivity before auto-close (0 / undefined = disabled). */
+	idleTimeoutMinutes?: number;
+}
+
+/** A single captured line of an app's child-process terminal output. */
+export interface MoreAppTerminalLine {
+	/** Monotonic sequence id, for incremental terminal updates. */
+	seq: number;
+	stream: "stdout" | "stderr" | "system";
+	text: string;
+	at: number;
+}
+
+export type MoreAppEvent =
+	| { type: "status"; apps: MoreAppView[] }
+	| { type: "terminal"; appId: string; line: MoreAppTerminalLine };
+
+export interface MoreAppActionRequest {
+	appId: string;
+}
+
+export interface UpdateMoreAppConfigRequest {
+	appId: string;
+	config: ExternalAppConfig;
+}
+
+export interface OpenMoreAppAtPathRequest {
+	appId: string;
+	/** Sub-path within the app, e.g. "/books/abc123/read". */
+	path: string;
+}
+
+export interface MoreAppTerminalResponse {
+	appId: string;
+	lines: MoreAppTerminalLine[];
+}
+
 // ── Sandbox ──────────────────────────────────────────────────────────────────
 // A lightweight-but-real isolation layer. "Miscellaneous" intermediate work
 // (document processing, scratch files, exploratory commands) runs confined to a
@@ -545,6 +724,11 @@ export interface InstalledSoftwarePlugin {
 	bridgeUrl?: string;
 	token?: string;
 	hostPath?: string;
+	certThumbprint?: string;
+	registryValueName?: string;
+	manifestId?: string;
+	officeChatBridgeUrl?: string;
+	officeChatBridgeToken?: string;
 	installedFiles: string[];
 	mcpServerId?: string;
 	installedAt: string;
@@ -730,11 +914,15 @@ export interface DesktopAssistantSettings {
 	capabilities: Record<DesktopCapabilityId, DesktopCapabilitySettings>;
 	webSearch: WebSearchSettings;
 	browser: BrowserSettings;
+	office: OfficeSettings;
 	mcp: McpSettings;
 	voice: VoiceSettings;
 	memory: MemorySettings;
 	tokenSaving: TokenSavingSettings;
 	autoTitle: AutoTitleSettings;
+	homeWelcome: HomeWelcomeSettings;
+	personalization: PersonalizationSettings;
+	experimental: ExperimentalSettings;
 	sandbox: SandboxSettings;
 	/** @deprecated use voice.wakeWord. */
 	wakeWord: string;
@@ -759,16 +947,23 @@ export interface MemorySettings {
 	enabled: boolean;
 	maxInjected: number;
 	autoExtract: boolean;
+	allowExternalContextExtraction: boolean;
+	allowAssistantDerivedFacts: boolean;
 }
 
 export type GlobalMemoryKind = "preference" | "profile" | "project" | "task" | "correction" | "fact";
+export type GlobalMemoryScope = "user" | "workspace";
+export type GlobalMemorySource = "explicit" | "auto" | "manual";
 
 export interface GlobalMemoryEntry {
-	schemaVersion: 1;
+	schemaVersion: 2;
 	id: string;
 	kind: GlobalMemoryKind;
+	scope: GlobalMemoryScope;
+	source: GlobalMemorySource;
 	text: string;
 	confidence: number;
+	reason?: string;
 	sourceSessionId?: string;
 	createdAt: string;
 	updatedAt: string;
@@ -1043,7 +1238,8 @@ export interface TimelineItem {
 		| "retry"
 		| "error"
 		| "compaction"
-		| "artifact";
+		| "artifact"
+		| "flowchart";
 	title: string;
 	detail?: string;
 	status: AutomationStatus;
@@ -1052,6 +1248,51 @@ export interface TimelineItem {
 	toolCallId?: string;
 	/** Present on `artifact` items: the output files this tool step produced. */
 	artifacts?: FileArtifact[];
+	/** Present on `flowchart` items: the automation flow graph + live run progress. */
+	flowGraph?: FlowGraphTimelineData;
+}
+
+/**
+ * Payload for a `flowchart` timeline item: a snapshot of an automation flow's
+ * graph plus its live execution progress. Rendered as a pinned flowchart panel
+ * at the top of the automation conversation (reuses the editor's FlowGraphPreview).
+ * The single item is updated in place by id as the run progresses, so its final
+ * state is archived with the conversation and replays correctly from history.
+ */
+export interface FlowGraphTimelineData {
+	flowId: string;
+	runId: string;
+	name: string;
+	nodes: FlowNode[];
+	edges: FlowEdge[];
+	/** Node currently executing (blue highlight), if any. */
+	activeNodeId?: string;
+	/** Nodes that have finished (green highlight + green traversed edges). */
+	doneNodeIds: string[];
+	status: AutomationRunStatus;
+}
+
+/**
+ * Live-flow working state for the "实时流程化" experiment: a flowchart the model
+ * designs on the fly in a NORMAL chat and executes step-by-step. Carried on the
+ * session snapshot (NOT a timeline item — kept separate from automation's pinned
+ * panel) and rendered in a draggable/collapsible floating window. Ephemeral working
+ * state for the active session only; not archived.
+ */
+export interface LiveFlowSnapshot {
+	title: string;
+	nodes: FlowNode[];
+	edges: FlowEdge[];
+	/** Node currently executing (blue highlight), if any. */
+	activeNodeId?: string;
+	/** Nodes that have finished (green highlight + green traversed edges). */
+	doneNodeIds: string[];
+	/** Nodes added by the most recent re-plan/revision (amber "新增" highlight). */
+	freshNodeIds?: string[];
+	status: AutomationRunStatus;
+	/** Short caption for the step in progress / next step, shown in the window footer. */
+	currentStep?: string;
+	updatedAt: number;
 }
 
 /**
@@ -1076,6 +1317,93 @@ export interface FileArtifact {
 	isDirectory: boolean;
 }
 
+// ── 灵动窗 (Dynamic Window) ────────────────────────────────────────────────
+// A per-conversation, multi-facet floating window that visualizes what the model
+// is doing (files / web / commands) and lets the user interact with it directly.
+// The flow facet is NOT modeled here — it reads `liveFlow` directly.
+
+/** Which content facet of the dynamic window is in view / has data. */
+export type DynamicWindowFacet = "flow" | "files" | "web" | "commands";
+
+/**
+ * One "operation" = a single tool call that fed a facet. Lets the dynamic window
+ * group its accumulated items so the user can scroll back / filter to an earlier
+ * operation's outputs.
+ */
+export interface DynamicWindowOperation {
+	id: string;
+	label: string;
+	timestamp: number;
+}
+
+/** A node in the "touched files" tree (folder = recursive, file = leaf). */
+export interface DynamicWindowFileNode {
+	name: string;
+	path: string;
+	isDirectory: boolean;
+	children?: DynamicWindowFileNode[];
+	/** Present on leaves: the underlying file, reusing the artifact-card model. */
+	artifact?: FileArtifact;
+	/** True when the model produced (wrote) this file, vs merely read/touched it. */
+	produced?: boolean;
+	/** Which operation introduced this leaf (for grouping / highlight). */
+	operationId?: string;
+}
+
+/** A page the model browsed/searched, surfaced in the web facet. */
+export interface DynamicWindowWebPage {
+	url: string;
+	title: string;
+	visitedAt: number;
+	operationId: string;
+}
+
+/** A command the model ran, surfaced in the commands facet. */
+export interface DynamicWindowCommand {
+	id: string;
+	command: string;
+	status: AutomationStatus;
+	stdout?: string;
+	stderr?: string;
+	timestamp: number;
+	operationId: string;
+}
+
+/**
+ * Accumulated state of one facet: items + operation grouping. The unread red-dot
+ * is derived on the client (item count vs last-seen), so it isn't carried here.
+ */
+export interface DynamicWindowFacetState<T> {
+	operations: DynamicWindowOperation[];
+	items: T[];
+}
+
+/**
+ * Per-session ephemeral working state for the dynamic window, accumulated over
+ * the whole conversation. Carried on the snapshot like `liveFlow`; not archived
+ * (history rebuilds it from the archived tool records, same as artifact cards).
+ */
+export interface DynamicWindowSnapshot {
+	/** Backend's suggested default facet (most recent activity); the UI may override. */
+	activeFacet: DynamicWindowFacet;
+	files: DynamicWindowFacetState<DynamicWindowFileNode> & { produced: FileArtifact[] };
+	web: DynamicWindowFacetState<DynamicWindowWebPage>;
+	commands: DynamicWindowFacetState<DynamicWindowCommand>;
+	updatedAt: number;
+}
+
+/**
+ * A file the user "marked" in the dynamic window's file facet. Marked files form
+ * a per-conversation persistent set: their name+path are injected into every
+ * turn's prompt so the model keeps attending to them until unmarked.
+ */
+export interface MarkedFileView {
+	path: string;
+	name: string;
+	ext: string;
+	markedAt: number;
+}
+
 export interface ChatMessageView {
 	id: string;
 	role: "user" | "assistant" | "system";
@@ -1085,6 +1413,8 @@ export interface ChatMessageView {
 	order: number;
 	tokenUsage?: MessageTokenUsageView;
 	turnTokenUsage?: MessageTokenUsageView;
+	/** Attachments sent with a user message; stored for display only (not re-sent). */
+	attachments?: Array<{ name: string; kind?: PromptAttachmentKind; sizeBytes: number }>;
 }
 
 export interface VoiceOverlayState {
@@ -1168,6 +1498,9 @@ export interface DesktopAssistantSnapshot {
 	messages: ChatMessageView[];
 	timeline: TimelineItem[];
 	pendingConfirmations: PendingConfirmation[];
+	queuedPreInputs: QueuedPreInputView[];
+	queuedSteeringMessages: string[];
+	steeringLog: SteeringLogEntry[];
 	voiceOverlay: VoiceOverlayState;
 	conversationThinking: ConversationThinkingState;
 	historyWindow?: ConversationHistoryWindow;
@@ -1180,6 +1513,47 @@ export interface DesktopAssistantSnapshot {
 	memoSummary?: MemoSummary;
 	/** Roll-up of automation flows; drives sidebar badges and home summaries. */
 	automationSummary?: AutomationSummary;
+	/** AI-generated home greeting + today overview; absent → renderer shows static. */
+	homeWelcome?: HomeWelcomeState;
+	/** "实时流程化" working flow for the focused session; drives the floating window. */
+	liveFlow?: LiveFlowSnapshot;
+	/** 灵动窗 working state for the focused session (files / web / commands facets). */
+	dynamicWindow?: DynamicWindowSnapshot;
+	/** Files the user pinned ("marked"); their name+path are injected every turn. */
+	markedFiles?: MarkedFileView[];
+}
+
+/** Cached AI home greeting carried on snapshots; drives the home hero typewriter. */
+export interface HomeWelcomeState {
+	/** The greeting + overview text to display. */
+	text: string;
+	/** ISO 8601 time it was generated (drives the 30-min regeneration gate). */
+	generatedAt: string;
+	/** Signature of the cheap context fields used; lets the gate dedupe. */
+	signature: string;
+	source: "ai" | "fallback";
+}
+
+/** Structured current weather for the home hero widget (from WeatherAPI.com current.json). */
+export interface HomeWeatherView {
+	/** Resolved city name (auto:ip lookup); absent if the payload omitted it. */
+	city?: string;
+	/** Current temperature in °C (always present — parse fails without it). */
+	tempC: number;
+	/** "Feels like" temperature in °C. */
+	feelsLikeC?: number;
+	/** Localized condition text, e.g. "多云". */
+	conditionText?: string;
+	/** WeatherAPI condition code; drives the lucide icon mapping. */
+	conditionCode?: number;
+	/** True for daytime conditions (is_day === 1); flips sun/moon style icons. */
+	isDay: boolean;
+	/** Relative humidity percentage. */
+	humidity?: number;
+	/** Wind speed in km/h. */
+	windKph?: number;
+	/** ISO 8601 fetch time. */
+	fetchedAt: string;
 }
 
 export type SessionNotificationKind = "awaiting" | "completed";
@@ -1201,11 +1575,32 @@ export type MemoPriority = "none" | "low" | "medium" | "high";
 export type MemoRecurrence = "none" | "daily" | "weekly" | "monthly";
 /** Lifecycle of a memo's reminder. "fired" includes "missed" (fired late on startup). */
 export type MemoReminderState = "none" | "pending" | "fired" | "snoozed" | "dismissed";
+export type MemoAutoRunStatus = "running" | "succeeded" | "failed";
 
 export interface MemoSubtask {
 	id: string;
 	title: string;
 	done: boolean;
+}
+
+export interface MemoAttachment {
+	id: string;
+	type: "file" | "image" | "url";
+	name: string;
+	href: string;
+	size?: number;
+	addedAt: string;
+}
+
+export interface MemoList {
+	id: string;
+	name: string;
+	color?: string;
+	icon?: string;
+	/** Manual display order (ascending). Lower sorts first. */
+	order?: number;
+	createdAt: string;
+	updatedAt: string;
 }
 
 export interface MemoItem {
@@ -1222,9 +1617,23 @@ export interface MemoItem {
 	recurrence: MemoRecurrence;
 	tags: string[];
 	subtasks: MemoSubtask[];
+	listId?: string;
+	/** Manual display order within the current memo scope. Lower sorts first. */
+	order?: number;
+	progress?: number;
+	attachments?: MemoAttachment[];
 	pinned: boolean;
 	/** Optional accent color token (hex or css var). */
 	color?: string;
+	/** When true, the assistant starts a background AI run when reminderAt fires on time. */
+	autoRunAtReminder: boolean;
+	/** Optional prompt for the scheduled AI run. Falls back to title + notes. */
+	autoRunPrompt?: string;
+	/** Last background session created by an automatic memo run. */
+	lastAutoRunSessionId?: string;
+	lastAutoRunAt?: string;
+	lastAutoRunError?: string;
+	lastAutoRunStatus?: MemoAutoRunStatus;
 	reminderState: MemoReminderState;
 	/** True when the reminder fired after its scheduled time (app was closed). */
 	reminderMissed?: boolean;
@@ -1246,13 +1655,14 @@ export interface MemoSummary {
 	upcoming: MemoItem[];
 }
 
-export type MemoSortKey = "due" | "priority" | "created" | "manual";
+export type MemoSortKey = "due" | "priority" | "created" | "manual" | "reminderAt";
 
 export interface MemoListRequest {
 	status?: MemoStatus;
 	tag?: string;
 	query?: string;
 	sort?: MemoSortKey;
+	listId?: string;
 }
 
 export interface MemoListResponse {
@@ -1269,8 +1679,13 @@ export interface MemoCreateRequest {
 	recurrence?: MemoRecurrence;
 	tags?: string[];
 	subtasks?: Array<{ title: string; done?: boolean }>;
+	listId?: string;
+	order?: number;
+	progress?: number;
 	pinned?: boolean;
 	color?: string;
+	autoRunAtReminder?: boolean;
+	autoRunPrompt?: string;
 	createdBy?: "user" | "ai";
 	sourceSessionId?: string;
 }
@@ -1287,8 +1702,80 @@ export interface MemoUpdateRequest {
 	recurrence?: MemoRecurrence;
 	tags?: string[];
 	subtasks?: MemoSubtask[];
+	listId?: string | null;
+	order?: number | null;
+	progress?: number | null;
 	pinned?: boolean;
 	color?: string | null;
+	autoRunAtReminder?: boolean;
+	autoRunPrompt?: string | null;
+}
+
+export interface MemoStatsResult {
+	total: number;
+	active: number;
+	overdue: number;
+	dueToday: number;
+	completedThisWeek: number;
+	completedThisMonth: number;
+	byPriority: Record<MemoPriority, number>;
+	snoozedCount: number;
+	avgCompletionDays?: number;
+}
+
+export interface MemoBatchRequest {
+	ids: string[];
+	action: "complete" | "delete" | "archive" | "setTags" | "setPriority" | "setListId";
+	tags?: string[];
+	priority?: MemoPriority;
+	listId?: string;
+}
+
+export interface MemoBatchResult {
+	succeeded: string[];
+	failed: string[];
+}
+
+export interface MemoListCreateRequest {
+	name: string;
+	color?: string;
+	icon?: string;
+}
+
+export interface MemoListUpdateRequest {
+	id: string;
+	name?: string;
+	color?: string | null;
+	icon?: string | null;
+}
+
+export interface MemoListDeleteRequest {
+	id: string;
+}
+
+export interface MemoListReorderRequest {
+	id: string;
+	direction: "up" | "down";
+}
+
+export interface MemoReorderRequest {
+	id: string;
+	beforeId?: string | null;
+	afterId?: string | null;
+	listId?: string | null;
+}
+
+export interface MemoAttachmentAddRequest {
+	memoId: string;
+	name?: string;
+	type?: MemoAttachment["type"];
+	filePath?: string;
+	url?: string;
+}
+
+export interface MemoAttachmentRemoveRequest {
+	memoId: string;
+	attachmentId: string;
 }
 
 export interface MemoDeleteRequest {
@@ -1311,6 +1798,12 @@ export interface MemoSetReminderRequest {
 	id: string;
 	/** New reminder time (ISO 8601), or null to clear it. */
 	reminderAt: string | null;
+	autoRunAtReminder?: boolean;
+	autoRunPrompt?: string | null;
+}
+
+export interface MemoRunAutoRequest {
+	id: string;
 }
 
 // Automation flows ----------------------------------------------------------
@@ -1590,6 +2083,7 @@ export interface DesktopAssistantEvent {
 		| "automation_draft_changed"
 		| "automation_progress"
 		| "automation_missed"
+		| "home_welcome"
 		| "route";
 	snapshot?: DesktopAssistantSnapshot;
 	/** Live roster for "session_status" events (and mirrored on snapshots). */
@@ -1622,6 +2116,8 @@ export interface DesktopAssistantEvent {
 	automationDraft?: AutomationDraft;
 	automationRun?: AutomationRunRecord;
 	automationProgress?: AutomationProgressEvent;
+	/** Payload for "home_welcome" events (the freshly generated greeting). */
+	homeWelcome?: HomeWelcomeState;
 	route?: "settings" | "mcp" | "memo" | "automation";
 }
 
@@ -1634,6 +2130,37 @@ export interface PendingPromptAttachment {
 	sizeBytes: number;
 	mimeType?: string;
 	kind?: PromptAttachmentKind;
+}
+
+export type PromptDelivery = "prompt" | "preInput" | "steer";
+
+export interface QueuedPreInputView {
+	id: string;
+	text: string;
+	createdAt: number;
+	sessionId: string;
+}
+
+export interface SteeringLogEntry {
+	id: string;
+	text: string;
+	/** "pending" = queued, awaiting safe insertion; "applied" = successfully inserted */
+	status: "pending" | "applied";
+	queuedAt: number;
+	appliedAt?: number;
+	/** Display order assigned at apply time so the bubble can be sorted into the conversation flow. */
+	order?: number;
+}
+
+export interface QueuedPreInputRequest {
+	id: string;
+	/** Target conversation; defaults to the focused one when omitted. */
+	sessionId?: string;
+}
+
+export interface WithdrawQueuedPreInputResponse {
+	queuedPreInput?: QueuedPreInputView;
+	snapshot: DesktopAssistantSnapshot;
 }
 
 export interface AttachmentSnapshotMetadata {
@@ -1658,6 +2185,7 @@ export interface PromptRequest {
 	message: string;
 	source: "text" | "voice";
 	attachments?: PendingPromptAttachment[];
+	delivery?: PromptDelivery;
 	/** Target conversation; defaults to the focused one when omitted. */
 	sessionId?: string;
 }
@@ -1686,6 +2214,11 @@ export interface ApiKeyUpdateRequest {
 
 export interface SettingsUpdateRequest {
 	settings: Partial<DesktopAssistantSettings>;
+}
+
+export interface RefreshHomeWelcomeRequest {
+	/** Bypass the signature/age dedupe (e.g. the user tapped manual refresh). */
+	force?: boolean;
 }
 
 export interface ConversationThinkingUpdateRequest {
@@ -1926,8 +2459,11 @@ export interface GlobalMemoryClearResponse {
 export interface GlobalMemoryUpdateRequest {
 	id: string;
 	kind?: GlobalMemoryKind;
+	scope?: GlobalMemoryScope;
+	source?: GlobalMemorySource;
 	text?: string;
 	confidence?: number;
+	reason?: string;
 	tags?: string[];
 	archived?: boolean;
 }
@@ -2132,6 +2668,7 @@ export const DEFAULT_DESKTOP_ASSISTANT_SETTINGS: DesktopAssistantSettings = {
 			{ id: "default-bilibili", label: "哔哩哔哩", url: "https://www.bilibili.com" },
 		],
 	},
+	office: { aiOfficePreference: "auto" },
 	mcp: {
 		enabled: true,
 		servers: [
@@ -2176,15 +2713,30 @@ export const DEFAULT_DESKTOP_ASSISTANT_SETTINGS: DesktopAssistantSettings = {
 		],
 	},
 	memory: {
-		enabled: true,
+		enabled: false,
 		maxInjected: 5,
-		autoExtract: true,
+		autoExtract: false,
+		allowExternalContextExtraction: false,
+		allowAssistantDerivedFacts: false,
 	},
 	tokenSaving: {
 		enabled: false,
 	},
 	autoTitle: {
 		enabled: true,
+	},
+	homeWelcome: {
+		enabled: true,
+		includeWeather: true,
+		includeEmail: true,
+	},
+	personalization: {
+		enabled: false,
+		locationMode: "auto",
+	},
+	experimental: {
+		errorSelfSummary: { enabled: false },
+		liveFlow: { enabled: false },
 	},
 	sandbox: DEFAULT_SANDBOX_SETTINGS,
 	voice: {
@@ -2317,10 +2869,14 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	focusSession: "desktop-assistant:focus-session",
 	closeSession: "desktop-assistant:close-session",
 	prompt: "desktop-assistant:prompt",
+	deleteQueuedPreInput: "desktop-assistant:delete-queued-pre-input",
+	withdrawQueuedPreInput: "desktop-assistant:withdraw-queued-pre-input",
 	abort: "desktop-assistant:abort",
 	updateConversationThinking: "desktop-assistant:update-conversation-thinking",
 	updateApiKey: "desktop-assistant:update-api-key",
 	updateSettings: "desktop-assistant:update-settings",
+	refreshHomeWelcome: "desktop-assistant:refresh-home-welcome",
+	getHomeWeather: "desktop-assistant:get-home-weather",
 	listMcpServers: "desktop-assistant:list-mcp-servers",
 	upsertMcpServer: "desktop-assistant:upsert-mcp-server",
 	deleteMcpServer: "desktop-assistant:delete-mcp-server",
@@ -2360,10 +2916,21 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	memoList: "desktop-assistant:memo-list",
 	memoCreate: "desktop-assistant:memo-create",
 	memoUpdate: "desktop-assistant:memo-update",
+	memoReorder: "desktop-assistant:memo-reorder",
 	memoComplete: "desktop-assistant:memo-complete",
 	memoSnooze: "desktop-assistant:memo-snooze",
 	memoSetReminder: "desktop-assistant:memo-set-reminder",
+	memoRunAutoNow: "desktop-assistant:memo-run-auto-now",
 	memoDelete: "desktop-assistant:memo-delete",
+	memoStats: "desktop-assistant:memo-stats",
+	memoBatch: "desktop-assistant:memo-batch",
+	memoListList: "desktop-assistant:memo-list-list",
+	memoListCreate: "desktop-assistant:memo-list-create",
+	memoListUpdate: "desktop-assistant:memo-list-update",
+	memoListReorder: "desktop-assistant:memo-list-reorder",
+	memoListDelete: "desktop-assistant:memo-list-delete",
+	memoAttachmentAdd: "desktop-assistant:memo-attachment-add",
+	memoAttachmentRemove: "desktop-assistant:memo-attachment-remove",
 	automationList: "desktop-assistant:automation-list",
 	automationGet: "desktop-assistant:automation-get",
 	automationCreate: "desktop-assistant:automation-create",
@@ -2392,6 +2959,7 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	builtInBrowserNewTab: "desktop-assistant:built-in-browser-new-tab",
 	builtInBrowserSwitchTab: "desktop-assistant:built-in-browser-switch-tab",
 	builtInBrowserCloseTab: "desktop-assistant:built-in-browser-close-tab",
+	builtInBrowserCloseWindow: "desktop-assistant:built-in-browser-close-window",
 	builtInBrowserGoBack: "desktop-assistant:built-in-browser-go-back",
 	builtInBrowserGoForward: "desktop-assistant:built-in-browser-go-forward",
 	builtInBrowserReload: "desktop-assistant:built-in-browser-reload",
@@ -2409,6 +2977,14 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	builtInBrowserGetCookies: "desktop-assistant:built-in-browser-get-cookies",
 	builtInBrowserVirtualMouse: "desktop-assistant:built-in-browser-virtual-mouse",
 	builtInBrowserEvent: "desktop-assistant:built-in-browser-event",
+	listMoreApps: "desktop-assistant:list-more-apps",
+	startMoreApp: "desktop-assistant:start-more-app",
+	stopMoreApp: "desktop-assistant:stop-more-app",
+	openMoreApp: "desktop-assistant:open-more-app",
+	openMoreAppAtPath: "desktop-assistant:open-more-app-at-path",
+	getMoreAppTerminal: "desktop-assistant:get-more-app-terminal",
+	updateMoreAppConfig: "desktop-assistant:update-more-app-config",
+	moreAppEvent: "desktop-assistant:more-app-event",
 	getSandboxStatus: "desktop-assistant:get-sandbox-status",
 	initSandbox: "desktop-assistant:init-sandbox",
 	resetSandbox: "desktop-assistant:reset-sandbox",

@@ -141,9 +141,14 @@ export class BuiltInBrowserController {
 
 	async open(request: { url?: string } = {}): Promise<BuiltInBrowserStatus> {
 		await this.ensureWindow();
-		const status = await this.ensureTab(request.url);
+		// Show the window before attaching/loading the tab. A WebContentsView attached while the
+		// host window is still hidden (show: false) does not get a paint surface allocated when the
+		// window is later shown, so the page loads but renders blank until a detach/re-attach forces
+		// a repaint (which is why opening another tab and coming back made it appear). Showing first
+		// means the view attaches to an already-visible window and paints normally.
 		this.window?.show();
 		this.window?.focus();
+		const status = await this.ensureTab(request.url);
 		return status;
 	}
 
@@ -184,6 +189,13 @@ export class BuiltInBrowserController {
 			await client.closeTarget(page.id);
 			return this.nativeStatusWithActiveTab(target);
 		});
+	}
+
+	async closeBrowserWindow(target: BrowserTarget): Promise<unknown> {
+		if (target !== "built_in") {
+			throw new Error("browser_close_window only closes the assistant's built-in browser window.");
+		}
+		return this.closeWindow();
 	}
 
 	async readBrowserPage(target: BrowserTarget, request: BrowserReadPageRequest = {}): Promise<unknown> {
@@ -351,6 +363,7 @@ export class BuiltInBrowserController {
 			newTab: (target, url) => this.newBrowserTab(target, url),
 			switchTab: (target, request) => this.switchBrowserTab(target, request),
 			closeTab: (target, request) => this.closeBrowserTab(target, request),
+			closeWindow: (target) => this.closeBrowserWindow(target),
 			readPage: (target, request) => this.readBrowserPage(target, request),
 			queryElements: (target, request) => this.queryBrowserElements(target, request),
 			click: (target, request) => this.clickBrowser(target, request),
@@ -445,6 +458,23 @@ export class BuiltInBrowserController {
 		}
 		this.emitStatus();
 		return this.buildStatus();
+	}
+
+	closeWindow(): { ok: true; closed: boolean } {
+		const win = this.window;
+		if (!win || win.isDestroyed()) {
+			this.tabs = [];
+			this.activeTabId = undefined;
+			return { ok: true, closed: false };
+		}
+		this.detachActiveView();
+		for (const tab of this.tabs) {
+			if (!tab.view.webContents.isDestroyed()) tab.view.webContents.close();
+		}
+		this.tabs = [];
+		this.activeTabId = undefined;
+		win.hide();
+		return { ok: true, closed: true };
 	}
 
 	async goBack(request: BrowserTabRequest): Promise<BuiltInBrowserStatus> {
@@ -697,7 +727,11 @@ export class BuiltInBrowserController {
 		this.window = win;
 		this.options.addWindow(win, "browser");
 		win.on("closed", () => {
-			if (this.window === win) this.window = undefined;
+			if (this.window === win) {
+				this.window = undefined;
+				this.tabs = [];
+				this.activeTabId = undefined;
+			}
 		});
 		await loadRendererWindow(win, this.options.devServerUrl, this.options.rendererDistDir, "browser");
 	}

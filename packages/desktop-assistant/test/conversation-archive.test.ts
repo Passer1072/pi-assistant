@@ -11,7 +11,9 @@ import type {
 } from "../src/agent/conversation-archive.ts";
 import { ConversationArchiveCoordinator, getConversationArchivePaths } from "../src/agent/conversation-archive.ts";
 import { DesktopAgentService } from "../src/agent/desktop-agent-service.ts";
+import { MemoryStore } from "../src/agent/memory-store.ts";
 import { DryRunDesktopAutomationHost } from "../src/desktop/automation-host.ts";
+import { DEFAULT_DESKTOP_ASSISTANT_SETTINGS } from "../src/shared/types.ts";
 
 describe("conversation archive", () => {
 	it("initializes AI-readable archive files under the save directory", async () => {
@@ -1269,6 +1271,13 @@ describe("conversation archive", () => {
 				cwd: workspace.cwd,
 				agentDir: workspace.agentDir,
 				host: new DryRunDesktopAutomationHost(),
+				settings: {
+					memory: {
+						...DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory,
+						enabled: true,
+						autoExtract: true,
+					},
+				},
 			});
 			const prompts: string[] = [];
 			const internal = service as unknown as {
@@ -1316,6 +1325,61 @@ describe("conversation archive", () => {
 			expect(prompts.at(-1)).toContain("<global_memory_context>");
 			expect(prompts.at(-1)).toContain("中文简洁");
 			expect(service.snapshot().lastInjectedMemoryCount).toBeGreaterThan(0);
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	it("does not inject global memory when cross-conversation memory is disabled", async () => {
+		const workspace = createTempWorkspace();
+		try {
+			const service = new DesktopAgentService({
+				cwd: workspace.cwd,
+				agentDir: workspace.agentDir,
+				host: new DryRunDesktopAutomationHost(),
+				settings: {
+					memory: {
+						...DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory,
+						enabled: false,
+						autoExtract: false,
+					},
+				},
+			});
+			const saved = new MemoryStore(workspace.cwd).upsert({
+				kind: "preference",
+				scope: "workspace",
+				source: "manual",
+				text: "User preference: answer in clipped haiku form",
+				confidence: 0.9,
+				tags: ["style"],
+			});
+			expect(saved).toBeDefined();
+			const prompts: string[] = [];
+			const internal = service as unknown as {
+				sessionManager: { getSessionId(): string; getSessionFile(): string | undefined };
+				bindSession(session: {
+					sessionId: string;
+					sessionFile?: string;
+					sessionName?: string;
+					prompt(message: string, options?: unknown): Promise<void>;
+					subscribe(listener: (event: unknown) => void): () => void;
+				}): void;
+			};
+
+			internal.bindSession({
+				sessionId: internal.sessionManager.getSessionId(),
+				sessionFile: internal.sessionManager.getSessionFile(),
+				sessionName: "memory-disabled",
+				prompt: async (message) => {
+					prompts.push(message);
+				},
+				subscribe: () => () => {},
+			});
+
+			await service.prompt("how should you answer?");
+
+			expect(prompts.at(-1)).not.toContain("<global_memory_context>");
+			expect(service.snapshot().lastInjectedMemoryCount).toBe(0);
 		} finally {
 			workspace.cleanup();
 		}
@@ -1384,6 +1448,13 @@ describe("conversation archive", () => {
 				cwd: workspace.cwd,
 				agentDir: workspace.agentDir,
 				host: new DryRunDesktopAutomationHost(),
+				settings: {
+					memory: {
+						...DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory,
+						enabled: true,
+						autoExtract: true,
+					},
+				},
 			});
 			const internal = service as unknown as {
 				sessionManager: { getSessionId(): string; getSessionFile(): string | undefined };
@@ -1434,6 +1505,13 @@ describe("conversation archive", () => {
 				cwd: workspace.cwd,
 				agentDir: workspace.agentDir,
 				host: new DryRunDesktopAutomationHost(),
+				settings: {
+					memory: {
+						...DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory,
+						enabled: true,
+						autoExtract: true,
+					},
+				},
 			});
 			const internal = service as unknown as {
 				sessionManager: { getSessionId(): string; getSessionFile(): string | undefined };
@@ -1584,6 +1662,195 @@ describe("conversation archive multi-session writers", () => {
 	});
 });
 
+describe("queued pre-input and steering", () => {
+	it("queues running pre-inputs and auto-sends them FIFO after a clean turn", async () => {
+		const workspace = createTempWorkspace();
+		try {
+			const service = new DesktopAgentService({
+				cwd: workspace.cwd,
+				agentDir: workspace.agentDir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+			const prompts: Array<{ message: string; options?: unknown }> = [];
+			const resolvers: Array<() => void> = [];
+			bindFakePromptSession(service, "preinput-fifo", (message, options) => {
+				prompts.push({ message, options });
+				return new Promise<void>((resolve) => {
+					resolvers.push(resolve);
+				});
+			});
+
+			const firstPrompt = service.prompt("first");
+			await vi.waitFor(() => expect(prompts).toHaveLength(1));
+			await service.prompt("queued one", "text", [], undefined, "preInput");
+			await service.prompt("queued two", "text", [], undefined, "preInput");
+
+			expect(prompts).toHaveLength(1);
+			expect(service.snapshot().queuedPreInputs.map((item) => item.text)).toEqual(["queued one", "queued two"]);
+
+			service.handleSessionEvent({
+				type: "agent_end",
+				messages: [createAssistantMessage("first reply")],
+				willRetry: false,
+			});
+			resolvers.shift()?.();
+
+			await vi.waitFor(() => expect(prompts).toHaveLength(2));
+			service.handleSessionEvent({
+				type: "agent_end",
+				messages: [createAssistantMessage("queued one reply")],
+				willRetry: false,
+			});
+			resolvers.shift()?.();
+			await vi.waitFor(() => expect(prompts).toHaveLength(3));
+			service.handleSessionEvent({
+				type: "agent_end",
+				messages: [createAssistantMessage("queued two reply")],
+				willRetry: false,
+			});
+			resolvers.shift()?.();
+			await firstPrompt;
+			await vi.waitFor(() => expect(service.snapshot().queuedPreInputs).toHaveLength(0));
+			expect(prompts.map((entry) => entry.message)).toEqual(["first", "queued one", "queued two"]);
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	it("keeps queued pre-inputs after abort, error, or pending confirmation", async () => {
+		const workspace = createTempWorkspace();
+		try {
+			const service = new DesktopAgentService({
+				cwd: workspace.cwd,
+				agentDir: workspace.agentDir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+			const prompts: string[] = [];
+			let resolvePrompt: (() => void) | undefined;
+			bindFakePromptSession(service, "preinput-blocked", (message) => {
+				prompts.push(message);
+				return new Promise<void>((resolve) => {
+					resolvePrompt = resolve;
+				});
+			});
+
+			const running = service.prompt("first");
+			await vi.waitFor(() => expect(prompts).toEqual(["first"]));
+			await service.prompt("queued", "text", [], undefined, "preInput");
+			service.handleSessionEvent({
+				type: "agent_end",
+				messages: [createAssistantRunEndMessage("aborted", undefined, "partial reply")],
+				willRetry: false,
+			});
+			resolvePrompt?.();
+			await running;
+
+			expect(prompts).toEqual(["first"]);
+			expect(service.snapshot().queuedPreInputs.map((item) => item.text)).toEqual(["queued"]);
+
+			const queuedId = service.snapshot().queuedPreInputs[0]?.id;
+			expect(queuedId).toBeDefined();
+			if (queuedId) service.deleteQueuedPreInput({ id: queuedId });
+			const errorResolvers: Array<() => void> = [];
+			bindFakePromptSession(service, "preinput-error", (message) => {
+				prompts.push(message);
+				return new Promise<void>((resolve) => {
+					errorResolvers.push(resolve);
+				});
+			});
+			const secondPrompt = service.prompt("second");
+			await vi.waitFor(() => expect(prompts).toEqual(["first", "second"]));
+			await service.prompt("queued error", "text", [], undefined, "preInput");
+			service.handleSessionEvent({
+				type: "agent_end",
+				messages: [createAssistantRunEndMessage("error", "boom")],
+				willRetry: false,
+			});
+			errorResolvers.shift()?.();
+			await secondPrompt;
+			expect(prompts).toEqual(["first", "second"]);
+			expect(service.snapshot().queuedPreInputs.map((item) => item.text)).toEqual(["queued error"]);
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	it("deletes and withdraws queued pre-inputs without sending them", async () => {
+		const workspace = createTempWorkspace();
+		try {
+			const service = new DesktopAgentService({
+				cwd: workspace.cwd,
+				agentDir: workspace.agentDir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+			const prompts: string[] = [];
+			bindFakePromptSession(service, "preinput-edit", (message) => {
+				prompts.push(message);
+				return new Promise<void>(() => {});
+			});
+
+			void service.prompt("running");
+			await vi.waitFor(() => expect(prompts).toEqual(["running"]));
+			await service.prompt("delete me", "text", [], undefined, "preInput");
+			await service.prompt("edit me", "text", [], undefined, "preInput");
+			const [deleteItem, editItem] = service.snapshot().queuedPreInputs;
+			expect(deleteItem).toBeDefined();
+			expect(editItem).toBeDefined();
+
+			service.deleteQueuedPreInput({ id: deleteItem.id });
+			const withdrawn = service.withdrawQueuedPreInput({ id: editItem.id });
+
+			expect(withdrawn.queuedPreInput?.text).toBe("edit me");
+			expect(service.snapshot().queuedPreInputs).toHaveLength(0);
+			expect(prompts).toEqual(["running"]);
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	it("sends steering with streamingBehavior steer and does not abort", async () => {
+		const workspace = createTempWorkspace();
+		try {
+			const service = new DesktopAgentService({
+				cwd: workspace.cwd,
+				agentDir: workspace.agentDir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+			const prompts: Array<{ message: string; options?: unknown }> = [];
+			let abortCount = 0;
+			bindFakePromptSession(
+				service,
+				"steer",
+				(message, options) => {
+					prompts.push({ message, options });
+					return message === "running" ? new Promise<void>(() => {}) : Promise.resolve();
+				},
+				() => {
+					abortCount += 1;
+				},
+			);
+
+			void service.prompt("running");
+			await vi.waitFor(() => expect(prompts).toHaveLength(1));
+			await service.prompt("guide now", "text", [], undefined, "steer");
+			service.handleSessionEvent({ type: "queue_update", steering: ["guide now"], followUp: [] });
+
+			expect(abortCount).toBe(0);
+			expect(prompts).toHaveLength(2);
+			expect(prompts[1]).toMatchObject({
+				message: "guide now",
+				options: { streamingBehavior: "steer" },
+			});
+			expect(service.snapshot().queuedSteeringMessages).toEqual(["guide now"]);
+			service.handleSessionEvent({ type: "queue_update", steering: [], followUp: [] });
+			expect(service.snapshot().queuedSteeringMessages).toEqual([]);
+			expect(service.snapshot().messages.map((message) => message.text)).toEqual(["running"]);
+		} finally {
+			workspace.cleanup();
+		}
+	});
+});
+
 function createTempWorkspace(): { cwd: string; agentDir: string; cleanup(): void } {
 	const root = mkdtempSync(join(tmpdir(), "desktop-assistant-archive-"));
 	const cwd = join(root, "workspace");
@@ -1638,6 +1905,33 @@ function ensureArchivedSessionFile(cwd: string, sessionId: string): void {
 	writeFileSync(metadata.sessionMirrorFile, sessionContent, "utf-8");
 }
 
+function bindFakePromptSession(
+	service: DesktopAgentService,
+	sessionName: string,
+	prompt: (message: string, options?: unknown) => Promise<void>,
+	abort: () => void = () => {},
+): void {
+	const internal = service as unknown as {
+		sessionManager: { getSessionId(): string; getSessionFile(): string | undefined };
+		bindSession(session: {
+			sessionId: string;
+			sessionFile?: string;
+			sessionName?: string;
+			prompt(message: string, options?: unknown): Promise<void>;
+			abort(): void;
+			subscribe(listener: (event: unknown) => void): () => void;
+		}): void;
+	};
+	internal.bindSession({
+		sessionId: internal.sessionManager.getSessionId(),
+		sessionFile: internal.sessionManager.getSessionFile(),
+		sessionName,
+		prompt,
+		abort,
+		subscribe: () => () => {},
+	});
+}
+
 function createArchiveRecord(
 	sessionId: string,
 	sequence: number,
@@ -1679,5 +1973,17 @@ function createAssistantMessage(text: string, usageUpdate: Partial<Usage> = {}):
 		usage,
 		stopReason: "stop",
 		timestamp: Date.now(),
+	};
+}
+
+function createAssistantRunEndMessage(
+	stopReason: "aborted" | "error",
+	errorMessage?: string,
+	text = "",
+): AssistantMessage {
+	return {
+		...createAssistantMessage(text),
+		stopReason,
+		errorMessage,
 	};
 }

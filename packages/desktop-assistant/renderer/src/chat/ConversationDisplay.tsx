@@ -1,9 +1,11 @@
-import { Brain, Check, ChevronDown, ChevronUp, Loader2, Sparkles, Square, X } from "lucide-react";
+import { Brain, Check, CheckCheck, ChevronDown, ChevronUp, FileText, Loader2, Sparkles, Square, X, Zap } from "lucide-react";
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { ChatMessageView, TimelineItem } from "../../../src/shared/types.ts";
 import { AssistantMessageMarkdown } from "../AssistantMessageMarkdown.tsx";
+import { formatAttachmentSize } from "./attachments.ts";
 import { buildDisplayItems, type DisplayItem } from "../display-items.ts";
 import { FileArtifactList } from "./FileArtifactCard.tsx";
+import { FlowchartProgressPanel } from "./FlowchartProgressPanel.tsx";
 
 function formatToolName(rawTitle: string): string {
 	const m = rawTitle.match(/Tool (?:started|finished|running):\s*(.+)/i);
@@ -204,8 +206,22 @@ export const MessageBubbleRow = memo(function MessageBubbleRow({
 	message: ChatMessageView;
 }) {
 	const tokenUsageText = message.role === "assistant" ? formatMessageTokenUsage(message) : undefined;
+	const hasAttachments = message.role === "user" && message.attachments && message.attachments.length > 0;
 	return (
-		<div className={`bubble-row ${message.role}`}>
+		<div className={`bubble-row ${message.role}${hasAttachments ? " has-attachments" : ""}`}>
+			{hasAttachments ? (
+				<div className="bubble-attachments">
+					{message.attachments!.map((attachment, index) => (
+						<div className="bubble-attachment-chip" key={`${attachment.name}-${index}`}>
+							<FileText size={11} />
+							<span className="bubble-attachment-name">{attachment.name}</span>
+							{attachment.sizeBytes > 0 ? (
+								<span className="bubble-attachment-size">{formatAttachmentSize(attachment.sizeBytes)}</span>
+							) : null}
+						</div>
+					))}
+				</div>
+			) : null}
 			<div className={`bubble ${message.role}`}>
 				{message.role === "assistant" ? (
 					<div className="bubble-meta">
@@ -226,6 +242,7 @@ export const MessageBubbleRow = memo(function MessageBubbleRow({
 
 export function displayItemKey(item: DisplayItem): string {
 	if (item.kind === "message") return `message-${item.message.id}`;
+	if (item.kind === "steering") return `steering-${item.item.id}`;
 	return `${item.kind}-${item.item.id}-${item.item.timestamp}`;
 }
 
@@ -269,6 +286,23 @@ export function DisplayItemRow({
 		return (
 			<div className="bubble-row assistant">
 				<FileArtifactList artifacts={item.item.artifacts ?? []} />
+			</div>
+		);
+	}
+	if (item.kind === "steering") {
+		return (
+			<div className="steering-bubble-row applied">
+				<div className="steering-bubble">
+					<div className="steering-bubble-meta">
+						<Zap size={11} />
+						<span>引导</span>
+					</div>
+					<p>{item.item.text}</p>
+					<div className="steering-applied-label">
+						<CheckCheck size={10} />
+						<span>已引导</span>
+					</div>
+				</div>
 			</div>
 		);
 	}
@@ -347,6 +381,13 @@ export function ConversationDisplay({
 	const previousStreamingThinkingRef = useRef(streamingThinking);
 	const previousIsRunningRef = useRef(isRunning);
 	const displayItems = useMemo(() => buildDisplayItems(messages, timeline), [messages, timeline]);
+	// Automation conversations carry a single `flowchart` item that we pin to the top
+	// of the thread (not part of the inline list) so the flow progress stays visible
+	// while tool rows scroll beneath it.
+	const flowItem = useMemo(
+		() => timeline.find((item) => item.kind === "flowchart" && item.flowGraph),
+		[timeline],
+	);
 
 	useEffect(() => {
 		const previousStreamingText = previousStreamingTextRef.current;
@@ -383,6 +424,7 @@ export function ConversationDisplay({
 
 	return (
 		<>
+			{flowItem?.flowGraph ? <FlowchartProgressPanel data={flowItem.flowGraph} /> : null}
 			{displayItems.map((item) => (
 				<DisplayItemRow
 					key={displayItemKey(item)}

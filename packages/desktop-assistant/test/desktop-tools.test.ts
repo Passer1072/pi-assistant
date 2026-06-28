@@ -31,6 +31,7 @@ import {
 	getActiveDesktopToolNames,
 	isSystemSkillMutationCommand,
 } from "../src/desktop/tools.ts";
+import { createWebTools } from "../src/desktop/tools-web.ts";
 import { buildAppLaunchCacheHtml } from "../src/main/app-launch-cache-view.ts";
 import type { DesktopCapabilityId, DesktopCapabilitySettings, DesktopToolResult } from "../src/shared/types.ts";
 
@@ -180,6 +181,57 @@ describe("desktop automation tools", () => {
 		expect(details.status).toBe("blocked");
 		expect(details.riskLevel).toBe("high");
 		expect(details.requiresConfirmation).toBe(true);
+	});
+
+	it("wait pauses server-side and returns a minimal result", async () => {
+		vi.useFakeTimers();
+		try {
+			const tools = createDesktopToolDefinitions({
+				host: new DryRunDesktopAutomationHost(),
+				permissionMode: () => "tiered",
+				systemCapability: () => enabledSystemCapability,
+			});
+			const tool = tools.find((entry) => entry.name === "wait");
+			if (!tool) throw new Error("wait tool missing");
+
+			const promise = tool.execute(
+				"tool-wait",
+				{ seconds: 2, reason: "job progress" },
+				undefined,
+				undefined,
+				stubContext(),
+			);
+			await vi.advanceTimersByTimeAsync(2_000);
+			const response = await promise;
+			const details = response.details as DesktopToolResult;
+
+			expect(details.status).toBe("succeeded");
+			expect(details.stdout).toContain('"waited":2');
+			expect(details.requiresConfirmation).toBe(false);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it("wait aborts promptly", async () => {
+		vi.useFakeTimers();
+		try {
+			const tools = createDesktopToolDefinitions({
+				host: new DryRunDesktopAutomationHost(),
+				permissionMode: () => "tiered",
+				systemCapability: () => enabledSystemCapability,
+			});
+			const tool = tools.find((entry) => entry.name === "wait");
+			if (!tool) throw new Error("wait tool missing");
+
+			const controller = new AbortController();
+			const promise = tool.execute("tool-wait", { seconds: 30 }, controller.signal, undefined, stubContext());
+			await vi.advanceTimersByTimeAsync(1_000);
+			controller.abort();
+			await expect(promise).rejects.toThrow("Aborted");
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 
 	it("blocks AI shell mutations of built-in desktop assistant skills", async () => {
@@ -564,6 +616,92 @@ describe("desktop automation tools", () => {
 		expect(wordSchema.properties.script.description).toContain("Do NOT call $Word.Quit()");
 		expect(excelSchema.properties.script.description).toContain("Do NOT call $Excel.Quit()");
 		expect(pptSchema.properties.script.description).toContain("Do NOT call $Ppt.Quit()");
+	});
+
+	it("normalizes excel_write cell value types before writing through COM", async () => {
+		let captured = "";
+		const host = Object.assign(new DryRunDesktopAutomationHost(), {
+			runPowerShellManaged: async (script: string) => {
+				captured = script;
+				return { stdout: "ok", stderr: "" };
+			},
+		}) as DesktopAutomationHost;
+		const tools = createDesktopToolDefinitions({
+			host,
+			permissionMode: () => "tiered",
+			systemCapability: () => enabledSystemCapability,
+		});
+		const tool = tools.find((entry) => entry.name === "excel_write");
+		if (!tool) throw new Error("excel_write tool missing");
+		const data = [
+			["时间节点", "总人数", "变化", "比例", "启用"],
+			["2026年6月", 548, -5, 12.5, true],
+			["空值", null, null, null, false],
+		];
+
+		await tool.execute(
+			"tool-excel-write",
+			{ path: "C:\\temp\\report.xlsx", data },
+			undefined,
+			undefined,
+			stubContext(),
+		);
+
+		expect(captured).toContain(Buffer.from(JSON.stringify(data), "utf-8").toString("base64"));
+		expect(captured).toContain("function Set-ExcelCellValue($cell, $value)");
+		expect(captured).toContain("'Int32' { $cell.Value = [double]$value; return }");
+		expect(captured).toContain("'Double' { $cell.Value = [double]$value; return }");
+		expect(captured).toContain("'Boolean' { $cell.Value = [bool]$value; return }");
+		expect(captured).toContain("'String' { $cell.Value2 = [string]$value; return }");
+		expect(captured).toContain("Set-ExcelCellValue ($ws.Cells.Item($row, $col)) $val");
+		expect(captured).not.toContain("$ws.Cells.Item($row, $col).Value2 = $val");
+	});
+
+	it("guides office_excel_run scripts away from raw integer Value2 writes", () => {
+		const tools = createDesktopToolDefinitions({
+			host: new DryRunDesktopAutomationHost(),
+			permissionMode: () => "tiered",
+			systemCapability: () => enabledSystemCapability,
+		});
+		const tool = tools.find((entry) => entry.name === "office_excel_run");
+		if (!tool) throw new Error("office_excel_run tool missing");
+		const schema = tool.parameters as { properties: { script: { description?: string } } };
+		const guidance = [schema.properties.script.description, ...(tool.promptGuidelines ?? [])].join("\n");
+
+		expect(guidance).toContain("$ws.Cells.Item(row,col) = 123");
+		expect(guidance).toContain("$cell.Value = [double]$n");
+		expect(guidance).toContain("avoid raw .Value2 = [int]");
+	});
+
+	it("wraps Excel COM script failures with exception type and source location", async () => {
+		let captured = "";
+		const host = Object.assign(new DryRunDesktopAutomationHost(), {
+			runPowerShellManaged: async (script: string) => {
+				captured = script;
+				return { stdout: "ok", stderr: "" };
+			},
+		}) as DesktopAutomationHost;
+		const tools = createDesktopToolDefinitions({
+			host,
+			permissionMode: () => "tiered",
+			systemCapability: () => enabledSystemCapability,
+		});
+		const tool = tools.find((entry) => entry.name === "office_excel_run");
+		if (!tool) throw new Error("office_excel_run tool missing");
+
+		await tool.execute(
+			"tool-excel-wrapper",
+			{ script: "$ws.Cells.Item(1,1).Value2 = [int]1" },
+			undefined,
+			undefined,
+			stubContext(),
+		);
+
+		expect(captured).toContain("Excel error ({0}): {1}");
+		expect(captured).toContain("$err.InvocationInfo.ScriptLineNumber");
+		expect(captured).toContain("$err.InvocationInfo.OffsetInLine");
+		expect(captured).toContain("$err.InvocationInfo.Line");
+		expect(captured).not.toContain('Write-Error "Excel error: $_"');
 	});
 
 	it("exposes the new inspect-first document tools when document capability is enabled", () => {
@@ -1097,6 +1235,134 @@ describe("desktop automation tools", () => {
 		}
 	});
 
+	it("repairs http port 443 redirects while fetching web pages", async () => {
+		const fetchCalls: string[] = [];
+		const fetchImpl = mockFetchSequence(fetchCalls, [
+			new Response("", {
+				status: 301,
+				headers: { location: "http://www.xiaoxiongyouhao.com:443/fprice/" },
+			}),
+			new Response("<html><body>today price</body></html>", {
+				status: 200,
+				headers: { "content-type": "text/html; charset=UTF-8" },
+			}),
+		]);
+		const tool = webFetchTool(fetchImpl);
+
+		const response = await tool.execute(
+			"tool-web-fetch",
+			{ url: "https://www.xiaoxiongyouhao.com/fprice" },
+			undefined,
+			undefined,
+			stubContext(),
+		);
+		const details = response.details as DesktopToolResult;
+
+		expect(fetchCalls).toEqual(["https://www.xiaoxiongyouhao.com/fprice", "https://www.xiaoxiongyouhao.com/fprice/"]);
+		expect(details.status).toBe("succeeded");
+		expect(details.stdout).toContain("today price");
+	});
+
+	it("tries a trailing slash web_fetch candidate after direct network failure", async () => {
+		const fetchCalls: string[] = [];
+		const fetchImpl = mockFetchSequence(fetchCalls, [
+			new TypeError("net::ERR_QUIC_PROTOCOL_ERROR"),
+			new Response("slash ok", { status: 200, headers: { "content-type": "text/plain" } }),
+		]);
+		const tool = webFetchTool(fetchImpl);
+
+		const response = await tool.execute(
+			"tool-web-fetch",
+			{ url: "https://example.com/path" },
+			undefined,
+			undefined,
+			stubContext(),
+		);
+		const details = response.details as DesktopToolResult;
+
+		expect(fetchCalls).toEqual(["https://example.com/path", "https://example.com/path/"]);
+		expect(details.status).toBe("succeeded");
+		expect(details.stdout).toBe("slash ok");
+	});
+
+	it("blocks web_fetch redirects rejected by sandbox network policy", async () => {
+		const fetchCalls: string[] = [];
+		const fetchImpl = mockFetchSequence(fetchCalls, [
+			new Response("", { status: 302, headers: { location: "https://blocked.example/page" } }),
+		]);
+		const tool = webFetchTool(fetchImpl, {
+			domainAllowList: ["allowed.example"],
+			domainDenyList: [],
+			blockPrivateIps: true,
+		});
+
+		const response = await tool.execute(
+			"tool-web-fetch",
+			{ url: "https://allowed.example/start" },
+			undefined,
+			undefined,
+			stubContext(),
+		);
+		const details = response.details as DesktopToolResult;
+
+		expect(fetchCalls).toEqual(["https://allowed.example/start"]);
+		expect(details.status).toBe("failed");
+		expect(details.stderr).toContain("blocked.example");
+	});
+
+	it("fails web_fetch clearly after too many redirects", async () => {
+		const fetchCalls: string[] = [];
+		const fetchImpl = async (input: Parameters<typeof fetch>[0]) => {
+			const url = String(input);
+			fetchCalls.push(url);
+			return new Response("", { status: 302, headers: { location: `${url}/next` } });
+		};
+		const tool = webFetchTool(fetchImpl as typeof fetch);
+
+		const response = await tool.execute(
+			"tool-web-fetch",
+			{ url: "https://example.com/start/" },
+			undefined,
+			undefined,
+			stubContext(),
+		);
+		const details = response.details as DesktopToolResult;
+
+		expect(fetchCalls).toHaveLength(7);
+		expect(details.status).toBe("failed");
+		expect(details.stderr).toContain("Too many redirects");
+	});
+
+	it("reports both direct and Jina web_fetch failures", async () => {
+		const fetchCalls: string[] = [];
+		const fetchImpl = mockFetchSequence(fetchCalls, [
+			new TypeError("net::ERR_QUIC_PROTOCOL_ERROR"),
+			new TypeError("slash still failed"),
+			new Response("", { status: 502 }),
+		]);
+		const tool = webFetchTool(fetchImpl);
+
+		const response = await tool.execute(
+			"tool-web-fetch",
+			{ url: "https://example.com/path" },
+			undefined,
+			undefined,
+			stubContext(),
+		);
+		const details = response.details as DesktopToolResult;
+
+		expect(fetchCalls).toEqual([
+			"https://example.com/path",
+			"https://example.com/path/",
+			"https://r.jina.ai/https://example.com/path",
+		]);
+		expect(details.status).toBe("failed");
+		expect(details.stderr).toContain("Direct fetch failed:");
+		expect(details.stderr).toContain("net::ERR_QUIC_PROTOCOL_ERROR");
+		expect(details.stderr).toContain("slash retry failed: slash still failed");
+		expect(details.stderr).toContain("Jina fallback failed: Jina 502");
+	});
+
 	it("disables system operation tools when the system capability is disabled", () => {
 		expect(getActiveDesktopToolNames({ enabled: false, commandFirst: true, skillName: "system-operation" })).toEqual(
 			[],
@@ -1400,6 +1666,30 @@ class FailingNameThenWebsiteHost implements DesktopAutomationHost {
 	async getActiveWindow(): Promise<{ title: string; processName?: string; isActive?: boolean } | undefined> {
 		return { title: "Google Translate", processName: "msedge", isActive: true };
 	}
+}
+
+function webFetchTool(
+	fetchImpl: typeof fetch,
+	network?: Parameters<typeof createWebTools>[0]["network"],
+): ToolDefinition {
+	const tool = createWebTools({
+		mode: "auto",
+		provider: "duckduckgo",
+		fetchImpl,
+		network,
+	}).find((entry) => entry.name === "web_fetch");
+	if (!tool) throw new Error("web_fetch tool missing");
+	return tool;
+}
+
+function mockFetchSequence(calls: string[], responses: Array<Response | Error>): typeof fetch {
+	return (async (input: Parameters<typeof fetch>[0]) => {
+		calls.push(String(input));
+		const next = responses.shift();
+		if (!next) throw new Error(`Unexpected fetch call: ${String(input)}`);
+		if (next instanceof Error) throw next;
+		return next;
+	}) as typeof fetch;
 }
 
 function stubContext() {

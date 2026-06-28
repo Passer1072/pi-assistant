@@ -14,6 +14,7 @@ function makeMemo(overrides: Partial<MemoItem> = {}): MemoItem {
 		tags: [],
 		subtasks: [],
 		pinned: false,
+		autoRunAtReminder: false,
 		reminderState: "pending",
 		createdAt: now,
 		updatedAt: now,

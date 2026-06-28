@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { GlobalMemoryEntry, GlobalMemoryKind } from "../shared/types.ts";
+import type { GlobalMemoryEntry, GlobalMemoryKind, GlobalMemoryScope, GlobalMemorySource } from "../shared/types.ts";
 import { getConversationArchivePaths } from "./conversation-archive.ts";
 
 export interface MemoryStorePaths {
@@ -18,8 +18,11 @@ export interface MemorySearchResult {
 
 export interface MemoryCandidate {
 	kind: GlobalMemoryKind;
+	scope?: GlobalMemoryScope;
+	source?: GlobalMemorySource;
 	text: string;
 	confidence: number;
+	reason?: string;
 	tags: string[];
 	archiveSimilarKinds?: GlobalMemoryKind[];
 }
@@ -28,12 +31,16 @@ export interface MemoryExtractionInput {
 	userMessage: string;
 	assistantMessage?: string;
 	sourceSessionId?: string;
+	includeAssistantDerivedFacts?: boolean;
 }
 
 export interface MemoryUpsertInput {
 	kind: GlobalMemoryKind;
+	scope?: GlobalMemoryScope;
+	source?: GlobalMemorySource;
 	text: string;
 	confidence: number;
+	reason?: string;
 	sourceSessionId?: string;
 	tags?: string[];
 	archived?: boolean;
@@ -117,6 +124,9 @@ export class MemoryStore {
 		const archiveKinds = input.archiveSimilarKinds ?? [];
 		let archivedForCorrection = false;
 		const normalizedTags = normalizeTags(input.tags ?? []);
+		const scope = normalizeMemoryScope(input.scope);
+		const source = normalizeMemorySource(input.source);
+		const reason = normalizeMemoryReason(input.reason);
 		const similarIndex = memories.findIndex(
 			(memory) =>
 				!memory.archived &&
@@ -147,6 +157,9 @@ export class MemoryStore {
 				...current,
 				text: sanitizedText,
 				confidence: clampConfidence(Math.max(current.confidence, input.confidence)),
+				scope: input.scope !== undefined ? scope : current.scope,
+				source: input.source !== undefined ? source : current.source,
+				reason: reason ?? current.reason,
 				sourceSessionId: input.sourceSessionId ?? current.sourceSessionId,
 				tags: mergeTags(current.tags, normalizedTags),
 				updatedAt: now,
@@ -157,11 +170,14 @@ export class MemoryStore {
 			return updated;
 		}
 		const memory: GlobalMemoryEntry = {
-			schemaVersion: 1,
+			schemaVersion: 2,
 			id: randomUUID(),
 			kind: archivedForCorrection && input.kind !== "correction" ? "correction" : input.kind,
+			scope,
+			source,
 			text: sanitizedText,
 			confidence: clampConfidence(input.confidence),
+			reason,
 			sourceSessionId: input.sourceSessionId,
 			createdAt: now,
 			updatedAt: now,
@@ -175,7 +191,9 @@ export class MemoryStore {
 
 	update(
 		id: string,
-		update: Partial<Pick<GlobalMemoryEntry, "kind" | "text" | "confidence" | "tags" | "archived">>,
+		update: Partial<
+			Pick<GlobalMemoryEntry, "kind" | "scope" | "source" | "text" | "confidence" | "reason" | "tags" | "archived">
+		>,
 	): GlobalMemoryEntry | undefined {
 		const memories = this.readAll();
 		const index = memories.findIndex((memory) => memory.id === id);
@@ -187,9 +205,12 @@ export class MemoryStore {
 		const updated: GlobalMemoryEntry = {
 			...current,
 			kind: update.kind ?? current.kind,
+			scope: update.scope !== undefined ? normalizeMemoryScope(update.scope) : current.scope,
+			source: update.source !== undefined ? normalizeMemorySource(update.source) : current.source,
 			text: nextText,
 			confidence:
 				update.confidence !== undefined ? clampConfidence(update.confidence) : clampConfidence(current.confidence),
+			reason: update.reason !== undefined ? normalizeMemoryReason(update.reason) : current.reason,
 			tags: update.tags !== undefined ? normalizeTags(update.tags) : current.tags,
 			archived: update.archived ?? current.archived,
 			updatedAt: new Date().toISOString(),
@@ -225,7 +246,9 @@ export class MemoryStore {
 		candidates.push(...extractProjectFacts(userMessage));
 		candidates.push(...extractTaskMemories(userMessage));
 		candidates.push(...extractCorrections(userMessage));
-		candidates.push(...extractAssistantFacts(assistantMessage));
+		if (input.includeAssistantDerivedFacts) {
+			candidates.push(...extractAssistantFacts(assistantMessage));
+		}
 		return dedupeCandidates(candidates).filter((candidate) => isValidMemoryText(candidate.text));
 	}
 
@@ -253,7 +276,7 @@ export class MemoryStore {
 			this.paths.indexFile,
 			JSON.stringify(
 				{
-					schemaVersion: 1,
+					schemaVersion: 2,
 					generatedAt: new Date().toISOString(),
 					count: active.length,
 					archivedCount: memories.length - active.length,
@@ -263,8 +286,11 @@ export class MemoryStore {
 						.map((memory) => ({
 							id: memory.id,
 							kind: memory.kind,
+							scope: memory.scope,
+							source: memory.source,
 							text: memory.text,
 							confidence: memory.confidence,
+							reason: memory.reason,
 							updatedAt: memory.updatedAt,
 							lastUsedAt: memory.lastUsedAt,
 							useCount: memory.useCount,
@@ -287,7 +313,7 @@ export class MemoryStore {
 			writeFileSync(
 				this.paths.indexFile,
 				JSON.stringify(
-					{ schemaVersion: 1, generatedAt: new Date().toISOString(), count: 0, memories: [] },
+					{ schemaVersion: 2, generatedAt: new Date().toISOString(), count: 0, memories: [] },
 					null,
 					"\t",
 				),
@@ -303,7 +329,8 @@ export class MemoryStore {
 export function buildMemoryContextBlock(memories: GlobalMemoryEntry[]): string {
 	if (memories.length === 0) return "";
 	const lines = memories.map(
-		(memory, index) => `${index + 1}. [${memory.kind}; confidence=${memory.confidence.toFixed(2)}] ${memory.text}`,
+		(memory, index) =>
+			`${index + 1}. [${memory.kind}; scope=${memory.scope}; confidence=${memory.confidence.toFixed(2)}] ${memory.text}`,
 	);
 	return [
 		"<global_memory_context>",
@@ -503,11 +530,14 @@ function normalizeMemoryEntry(entry: Partial<GlobalMemoryEntry>): GlobalMemoryEn
 	const sanitizedText = sanitizeMemoryText(entry.text);
 	if (!isValidMemoryText(sanitizedText)) return undefined;
 	return {
-		schemaVersion: 1,
+		schemaVersion: 2,
 		id: entry.id,
 		kind: entry.kind,
+		scope: normalizeMemoryScope(entry.scope),
+		source: normalizeMemorySource(entry.source),
 		text: sanitizedText,
 		confidence: clampConfidence(entry.confidence ?? 0.5),
+		reason: normalizeMemoryReason(entry.reason),
 		sourceSessionId: entry.sourceSessionId,
 		createdAt: entry.createdAt ?? now,
 		updatedAt: entry.updatedAt ?? entry.createdAt ?? now,
@@ -516,6 +546,19 @@ function normalizeMemoryEntry(entry: Partial<GlobalMemoryEntry>): GlobalMemoryEn
 		tags: normalizeTags(entry.tags ?? []),
 		archived: entry.archived ?? false,
 	};
+}
+
+function normalizeMemoryScope(scope: unknown): GlobalMemoryScope {
+	return scope === "user" ? "user" : "workspace";
+}
+
+function normalizeMemorySource(source: unknown): GlobalMemorySource {
+	if (source === "explicit" || source === "manual") return source;
+	return "auto";
+}
+
+function normalizeMemoryReason(reason: unknown): string | undefined {
+	return typeof reason === "string" ? reason.trim().slice(0, 160) || undefined : undefined;
 }
 
 function isMemoryKind(kind: string): kind is GlobalMemoryKind {

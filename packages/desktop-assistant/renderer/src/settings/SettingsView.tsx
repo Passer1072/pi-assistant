@@ -1,8 +1,8 @@
 import type React from "react";
-import { ArrowLeft, BookOpen, Check, ChevronRight, Eye, EyeOff, Globe, KeyRound, Loader2, Minus, Pin, PinOff, Plus, Plug, RefreshCw, Trash2, Wrench, X } from "lucide-react";
+import { ArrowLeft, BookOpen, Brain, Check, ChevronRight, Eye, EyeOff, Globe, KeyRound, Loader2, Minus, Pin, PinOff, Plus, Plug, RefreshCw, Trash2, Wrench, X } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 import { DEFAULT_DEEPSEEK_RELAY_URL } from "../../../src/shared/deepseek-connection.ts";
-import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, type AiBrowserPreference, type BrowserNativeStatus, type BrowserStorageClearScope, type BrowserTarget, type DesktopAssistantSettings, type DesktopAssistantSnapshot, type WakeWordModelMetadata, type WebSearchProvider } from "../../../src/shared/types.ts";
+import { DEFAULT_VOICE_STT_BASE_URL_BY_PROVIDER, type AiBrowserPreference, type BrowserNativeStatus, type BrowserStorageClearScope, type BrowserTarget, type DesktopAssistantSettings, type DesktopAssistantSnapshot, type GlobalMemoryEntry, type WakeWordModelMetadata, type WebSearchProvider } from "../../../src/shared/types.ts";
 import { resolveWakeWordModelWakeWord } from "../../../src/shared/wake-word-settings.ts";
 import { cloneSettings, normalizeDraftSettingsBeforeApply, settingsKey } from "../settings-draft.ts";
 import { apiKeyStatusText, formatBytes, formatImportedAt } from "../formatters.ts";
@@ -66,6 +66,9 @@ export function SettingsView({
 	const [browserBusy, setBrowserBusy] = useState(false);
 	const [browserStatus, setBrowserStatus] = useState("");
 	const [nativeBrowserStatus, setNativeBrowserStatus] = useState<BrowserNativeStatus | undefined>();
+	const [globalMemories, setGlobalMemories] = useState<GlobalMemoryEntry[]>([]);
+	const [memoryBusy, setMemoryBusy] = useState(false);
+	const [memoryStatus, setMemoryStatus] = useState("");
 
 	const snapshotSettingsKey = useMemo(() => settingsKey(snapshot.settings), [snapshot.settings]);
 	const draftSettingsKey = useMemo(() => settingsKey(draftSettings), [draftSettings]);
@@ -84,6 +87,9 @@ export function SettingsView({
 	const [wsGoogleCx, setWsGoogleCx] = useState(ws.googleCx ?? "");
 	const [wsSearxngUrl, setWsSearxngUrl] = useState(ws.searxngUrl ?? "");
 
+	// Weather API key: local state mirrors homeWelcome.weatherApiKey.
+	const [weatherApiKey, setWeatherApiKey] = useState(draftSettings.homeWelcome?.weatherApiKey ?? "");
+
 	const updateDraft = (update: Partial<DesktopAssistantSettings>) => {
 		setSettingsStatus("");
 		setDraftSettings((current) => ({ ...current, ...update }));
@@ -99,6 +105,19 @@ export function SettingsView({
 		setDraftSettings((current) => ({ ...current, browser: { ...current.browser, ...update, persistStorage: true } }));
 	};
 
+	const updateDraftMemory = (update: Partial<DesktopAssistantSettings["memory"]>) => {
+		setSettingsStatus("");
+		setDraftSettings((current) => ({ ...current, memory: { ...current.memory, ...update } }));
+	};
+
+	const updateDraftPersonalization = (update: Partial<DesktopAssistantSettings["personalization"]>) => {
+		setSettingsStatus("");
+		setDraftSettings((current) => ({
+			...current,
+			personalization: { ...current.personalization, ...update },
+		}));
+	};
+
 	const restoreDraft = () => {
 		setDraftSettings(cloneSettings(snapshot.settings));
 		const nextKey = settingsKey(snapshot.settings);
@@ -106,6 +125,7 @@ export function SettingsView({
 		setWsApiKey(snapshot.settings.webSearch?.apiKey ?? "");
 		setWsGoogleCx(snapshot.settings.webSearch?.googleCx ?? "");
 		setWsSearxngUrl(snapshot.settings.webSearch?.searxngUrl ?? "");
+		setWeatherApiKey(snapshot.settings.homeWelcome?.weatherApiKey ?? "");
 		setSettingsStatus("已恢复到当前已应用设置。");
 	};
 
@@ -139,6 +159,16 @@ export function SettingsView({
 				apiKey: wsApiKey.trim() || undefined,
 				googleCx: wsGoogleCx.trim() || undefined,
 				searxngUrl: wsSearxngUrl.trim() || undefined,
+			},
+		});
+	};
+
+	/** Save the WeatherAPI.com API key into the draft. */
+	const saveWeatherApiKey = () => {
+		updateDraft({
+			homeWelcome: {
+				...draftSettings.homeWelcome,
+				weatherApiKey: weatherApiKey.trim() || undefined,
 			},
 		});
 	};
@@ -260,6 +290,24 @@ export function SettingsView({
 		};
 	}, []);
 
+	const loadGlobalMemories = async () => {
+		if (!window.desktopAssistant) return;
+		setMemoryBusy(true);
+		setMemoryStatus("");
+		try {
+			const result = await window.desktopAssistant.listGlobalMemories();
+			setGlobalMemories(result.memories);
+		} catch (error) {
+			setMemoryStatus(error instanceof Error ? error.message : String(error));
+		} finally {
+			setMemoryBusy(false);
+		}
+	};
+
+	useEffect(() => {
+		void loadGlobalMemories();
+	}, []);
+
 	useEffect(() => {
 		if (!window.desktopAssistant) return;
 		let cancelled = false;
@@ -319,6 +367,36 @@ export function SettingsView({
 			setAppCacheStatus(error instanceof Error ? error.message : String(error));
 		} finally {
 			setAppCacheBusy(false);
+		}
+	};
+
+	const deleteGlobalMemory = async (id: string) => {
+		if (!window.desktopAssistant) return;
+		setMemoryBusy(true);
+		setMemoryStatus("");
+		try {
+			const result = await window.desktopAssistant.deleteGlobalMemory({ id });
+			setGlobalMemories(result.memories);
+			setMemoryStatus("记忆已删除。");
+		} catch (error) {
+			setMemoryStatus(error instanceof Error ? error.message : String(error));
+		} finally {
+			setMemoryBusy(false);
+		}
+	};
+
+	const clearGlobalMemories = async () => {
+		if (!window.desktopAssistant) return;
+		setMemoryBusy(true);
+		setMemoryStatus("");
+		try {
+			const result = await window.desktopAssistant.clearGlobalMemories();
+			setGlobalMemories([]);
+			setMemoryStatus(`已清空 ${result.deletedCount} 条记忆。`);
+		} catch (error) {
+			setMemoryStatus(error instanceof Error ? error.message : String(error));
+		} finally {
+			setMemoryBusy(false);
 		}
 	};
 
@@ -675,6 +753,400 @@ export function SettingsView({
 					<p className="set-hint">
 						开启后只压缩发送给模型的浏览器 MCP 大结果、HTML、长链接列表和旧工具结果；聊天历史和工具详情仍保留原始内容。
 					</p>
+				</section>
+				<section className="set-section">
+					<h3>首页智能问候</h3>
+					<label className="set-row toggle-row">
+						<span>启用 AI 动态问候</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.homeWelcome.enabled ? "on" : ""}`}
+							onClick={() =>
+								updateDraft({
+									homeWelcome: {
+										...draftSettings.homeWelcome,
+										enabled: !draftSettings.homeWelcome.enabled,
+									},
+								})
+							}
+							aria-pressed={draftSettings.homeWelcome.enabled}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<p className="set-hint">
+						开启后，首页问候由 DeepSeek Flash 根据日期/时段/节日和你的待办、自动化生成，启动时一次、运行中最多每
+						30 分钟刷新一次（仅在内容变化时才真正调用模型，省 token）。关闭则显示固定问候。
+					</p>
+					<label className="set-row toggle-row">
+						<span>结合天气</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.homeWelcome.includeWeather ? "on" : ""}`}
+							onClick={() =>
+								updateDraft({
+									homeWelcome: {
+										...draftSettings.homeWelcome,
+										includeWeather: !draftSettings.homeWelcome.includeWeather,
+									},
+								})
+							}
+							aria-pressed={draftSettings.homeWelcome.includeWeather}
+							disabled={!draftSettings.homeWelcome.enabled}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					{draftSettings.homeWelcome.enabled && (
+						<>
+							<label className="set-row">
+								<span>WeatherAPI Key</span>
+								<div className="input-with-btn">
+									<input
+										type="password"
+										placeholder="请输入 WeatherAPI.com API Key"
+										value={weatherApiKey}
+										onChange={(e) => setWeatherApiKey(e.target.value)}
+									/>
+									<button type="button" className="ghost-btn" onClick={saveWeatherApiKey} title="保存">
+										<Check size={14} />
+									</button>
+								</div>
+							</label>
+							{draftSettings.homeWelcome.weatherApiKey &&
+								weatherApiKey === draftSettings.homeWelcome.weatherApiKey && (
+									<div className="key-status-chip ok" style={{ margin: "0 4px 6px" }}>
+										<Check size={12} />
+										<span>已配置</span>
+									</div>
+								)}
+							<p className="set-hint">
+								在{" "}
+								<a
+									href="https://www.weatherapi.com/my/"
+									target="_blank"
+									rel="noreferrer"
+									onClick={(e) => {
+										e.preventDefault();
+										window.open("https://www.weatherapi.com/my/");
+									}}
+								>
+									weatherapi.com/my
+								</a>{" "}
+								获取免费 API Key（每月 100 万次免费调用）。填写后首页右上角会显示天气卡片；开启上面「结合天气」还会把天气写进问候语。未填写则两者都略过。
+							</p>
+						</>
+					)}
+					<label className="set-row toggle-row">
+						<span>结合邮箱未读</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.homeWelcome.includeEmail ? "on" : ""}`}
+							onClick={() =>
+								updateDraft({
+									homeWelcome: {
+										...draftSettings.homeWelcome,
+										includeEmail: !draftSettings.homeWelcome.includeEmail,
+									},
+								})
+							}
+							aria-pressed={draftSettings.homeWelcome.includeEmail}
+							disabled={!draftSettings.homeWelcome.enabled}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<p className="set-hint">
+						天气通过 WeatherAPI.com 按 IP 位置获取（需配置 API Key）；邮箱仅在「邮箱管家」应用已在运行时读取未读概览，不会为此启动它。两者均为尽力而为，失败时自动略过。
+					</p>
+				</section>
+				<section className="set-section">
+					<h3>个性化</h3>
+					<label className="set-row toggle-row">
+						<span>启用个性化</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.personalization.enabled ? "on" : ""}`}
+							onClick={() => updateDraftPersonalization({ enabled: !draftSettings.personalization.enabled })}
+							aria-pressed={draftSettings.personalization.enabled}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<p className="set-hint">
+						开启后，下面的称呼、角色、语气与所在地会注入到对话与首页问候，让小派按你的设定回应。改动对新建的对话生效。
+					</p>
+					{draftSettings.personalization.enabled && (
+						<>
+							<label className="set-row">
+								<span>对你的称呼</span>
+								<input
+									type="text"
+									placeholder="例如：主人 / 老板 / 你的名字"
+									value={draftSettings.personalization.userAddressing ?? ""}
+									onChange={(e) =>
+										updateDraftPersonalization({ userAddressing: e.target.value || undefined })
+									}
+								/>
+							</label>
+
+							<label className="set-row">
+								<span>扮演角色</span>
+								<input
+									type="text"
+									placeholder="例如：资深程序员 / 贴心助理 / 英语老师"
+									value={draftSettings.personalization.rolePlay ?? ""}
+									onChange={(e) => updateDraftPersonalization({ rolePlay: e.target.value || undefined })}
+								/>
+							</label>
+							<div className="set-chip-row">
+								{["资深程序员", "贴心助理", "英语老师", "猫娘", "知心朋友"].map((role) => (
+									<button
+										key={role}
+										type="button"
+										className="set-chip"
+										onClick={() => updateDraftPersonalization({ rolePlay: role })}
+									>
+										{role}
+									</button>
+								))}
+							</div>
+
+							<label className="set-row">
+								<span>语气</span>
+								<input
+									type="text"
+									placeholder="例如：友好亲切 / 专业严谨"
+									value={draftSettings.personalization.tone ?? ""}
+									onChange={(e) => updateDraftPersonalization({ tone: e.target.value || undefined })}
+								/>
+							</label>
+							<div className="set-chip-row">
+								{["专业严谨", "友好亲切", "简洁高效", "幽默风趣", "温柔体贴"].map((tone) => (
+									<button
+										key={tone}
+										type="button"
+										className="set-chip"
+										onClick={() => updateDraftPersonalization({ tone })}
+									>
+										{tone}
+									</button>
+								))}
+							</div>
+
+							<label className="set-row toggle-row">
+								<span>所在地</span>
+								<div className="seg-control">
+									<button
+										type="button"
+										className={`seg-btn ${draftSettings.personalization.locationMode === "auto" ? "on" : ""}`}
+										onClick={() => updateDraftPersonalization({ locationMode: "auto" })}
+									>
+										自动检测
+									</button>
+									<button
+										type="button"
+										className={`seg-btn ${draftSettings.personalization.locationMode === "manual" ? "on" : ""}`}
+										onClick={() => updateDraftPersonalization({ locationMode: "manual" })}
+									>
+										手动设置
+									</button>
+								</div>
+							</label>
+							{draftSettings.personalization.locationMode === "manual" ? (
+								<label className="set-row">
+									<span>城市/地区</span>
+									<input
+										type="text"
+										placeholder="例如：北京市 / 上海 浦东"
+										value={draftSettings.personalization.manualLocation ?? ""}
+										onChange={(e) =>
+											updateDraftPersonalization({ manualLocation: e.target.value || undefined })
+										}
+									/>
+								</label>
+							) : (
+								<p className="set-hint">
+									将复用「首页智能问候」的 WeatherAPI 按 IP 自动定位（需在上方配置 WeatherAPI Key）。未配置时所在地会自动略过。
+								</p>
+							)}
+						</>
+					)}
+				</section>
+				<section className="set-section">
+					<h3>实验性功能</h3>
+					<label className="set-row toggle-row">
+						<span>模型自动总结改进方案（出错自我总结）</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.experimental.errorSelfSummary.enabled ? "on" : ""}`}
+							onClick={() =>
+								updateDraft({
+									experimental: {
+										...draftSettings.experimental,
+										errorSelfSummary: {
+											...draftSettings.experimental.errorSelfSummary,
+											enabled: !draftSettings.experimental.errorSelfSummary.enabled,
+										},
+									},
+								})
+							}
+							aria-pressed={draftSettings.experimental.errorSelfSummary.enabled}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<p className="set-hint">
+						开启后，模型在某一轮调用工具遇到报错（工具失败，或工具成功但返回内容含报错）时，会在答完该轮后自动做一次「流程回顾自我总结」，并记成一条标题为「会话
+						xxx 出错总结」的备忘录，方便后续交给 Claude/ChatGPT 分析修复。用户拒绝确认或主动中止造成的失败不会被总结。属实验功能，会略增 token 消耗。
+					</p>
+					<label className="set-row toggle-row">
+						<span>实时流程化（边规划边执行的流程图浮窗）</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.experimental.liveFlow.enabled ? "on" : ""}`}
+							onClick={() =>
+								updateDraft({
+									experimental: {
+										...draftSettings.experimental,
+										liveFlow: {
+											...draftSettings.experimental.liveFlow,
+											enabled: !draftSettings.experimental.liveFlow.enabled,
+										},
+									},
+								})
+							}
+							aria-pressed={draftSettings.experimental.liveFlow.enabled}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<p className="set-hint">
+						开启后，普通会话里遇到多步骤、有明确执行步骤的任务时，模型会先设计一张流程图（显示在右下角可拖动、可折叠的浮窗里），再照着流程图逐步执行——每完成一步会自动把「下一步」回传给模型，避免跑偏；中途遇到问题会研究方案并修改流程图后继续。步骤不清晰时模型会先调研清楚再画。对新建/刷新的会话生效，会略增
+						token 消耗。
+					</p>
+				</section>
+				<section className="set-section">
+					<h3>跨对话记忆（实验）</h3>
+					<label className="set-row toggle-row">
+						<span>启用跨对话记忆</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.memory.enabled ? "on" : ""}`}
+							onClick={() => updateDraftMemory({ enabled: !draftSettings.memory.enabled })}
+							aria-pressed={draftSettings.memory.enabled}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<p className="set-hint">
+						本地 JSONL 记忆，默认关闭。开启后会在新请求前检索相关记忆并注入模型；当前用户消息始终优先于旧记忆。
+					</p>
+					<label className="set-row">
+						<span>每次最多注入</span>
+						<input
+							type="number"
+							min={0}
+							max={20}
+							value={draftSettings.memory.maxInjected}
+							onChange={(event) => updateDraftMemory({ maxInjected: Number(event.target.value) })}
+						/>
+					</label>
+					<label className="set-row toggle-row">
+						<span>自动提取记忆</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.memory.autoExtract ? "on" : ""}`}
+							onClick={() => updateDraftMemory({ autoExtract: !draftSettings.memory.autoExtract })}
+							aria-pressed={draftSettings.memory.autoExtract}
+							disabled={!draftSettings.memory.enabled}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<label className="set-row toggle-row">
+						<span>允许从外部上下文提取</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.memory.allowExternalContextExtraction ? "on" : ""}`}
+							onClick={() =>
+								updateDraftMemory({
+									allowExternalContextExtraction: !draftSettings.memory.allowExternalContextExtraction,
+								})
+							}
+							aria-pressed={draftSettings.memory.allowExternalContextExtraction}
+							disabled={!draftSettings.memory.enabled || !draftSettings.memory.autoExtract}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<label className="set-row toggle-row">
+						<span>允许保存 AI 推导事实</span>
+						<button
+							type="button"
+							className={`toggle ${draftSettings.memory.allowAssistantDerivedFacts ? "on" : ""}`}
+							onClick={() =>
+								updateDraftMemory({
+									allowAssistantDerivedFacts: !draftSettings.memory.allowAssistantDerivedFacts,
+								})
+							}
+							aria-pressed={draftSettings.memory.allowAssistantDerivedFacts}
+							disabled={!draftSettings.memory.enabled || !draftSettings.memory.autoExtract}
+						>
+							<span className="toggle-thumb" />
+						</button>
+					</label>
+					<div className="history-controls">
+						<div className="history-info">
+							<span>已保存</span>
+							<strong>{globalMemories.length}</strong>
+							<small>条记忆</small>
+						</div>
+						<div className="cache-controls">
+							<button type="button" className="ghost-btn wide" onClick={() => void loadGlobalMemories()} disabled={memoryBusy}>
+								{memoryBusy ? <Loader2 size={14} className="spin" /> : <RefreshCw size={14} />}
+								<span>刷新</span>
+							</button>
+							<button
+								type="button"
+								className="danger-btn"
+								disabled={memoryBusy || globalMemories.length === 0}
+								onClick={async () => {
+									if (window.confirm("确定要清空所有跨对话记忆吗？")) {
+										await clearGlobalMemories();
+									}
+								}}
+							>
+								<Trash2 size={13} />
+								<span>清空</span>
+							</button>
+						</div>
+					</div>
+					<div className="memory-list">
+						{globalMemories.slice(0, 8).map((memory) => (
+							<div className="memory-list-item" key={memory.id}>
+								<Brain size={14} />
+								<div>
+									<strong>{memory.kind}</strong>
+									<span>{memory.text}</span>
+									<small>
+										{memory.scope} / {memory.source} / {memory.confidence.toFixed(2)}
+									</small>
+								</div>
+								<button
+									type="button"
+									className="ghost-btn"
+									onClick={() => void deleteGlobalMemory(memory.id)}
+									disabled={memoryBusy}
+									aria-label="删除记忆"
+								>
+									<X size={13} />
+								</button>
+							</div>
+						))}
+						{globalMemories.length === 0 ? <p className="set-hint">暂无跨对话记忆。</p> : null}
+					</div>
+					{memoryStatus ? <div className="skill-editor-status">{memoryStatus}</div> : null}
 				</section>
 				<section className="set-section">
 					<h3>应用启动记忆</h3>

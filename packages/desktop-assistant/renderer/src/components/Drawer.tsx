@@ -2,6 +2,7 @@ import {
 	ArrowLeft,
 	ChevronRight,
 	Home,
+	LayoutGrid,
 	ListTodo,
 	Loader2,
 	Settings as SettingsIcon,
@@ -70,6 +71,7 @@ export function Drawer({
 	onOpenHome,
 	onOpenAutomation,
 	onOpenMemo,
+	onOpenMoreApps,
 	onOpenSettings,
 	activeId,
 	loadingId,
@@ -89,6 +91,7 @@ export function Drawer({
 	onOpenHome: () => void;
 	onOpenAutomation: () => void;
 	onOpenMemo: () => void;
+	onOpenMoreApps: () => void;
 	onOpenSettings: () => void;
 	activeId: string | null;
 	loadingId?: string;
@@ -154,6 +157,15 @@ export function Drawer({
 					<ListTodo size={15} />
 					<span>备忘录</span>
 					{memoBadge > 0 ? <span className="drawer-badge">{memoBadge}</span> : null}
+				</button>
+
+				<button
+					className={`drawer-nav ${activeRoute === "more-apps" ? "active" : ""}`}
+					type="button"
+					onClick={onOpenMoreApps}
+				>
+					<LayoutGrid size={15} />
+					<span>更多应用</span>
 				</button>
 
 				<div className="drawer-section-label">会话列表</div>

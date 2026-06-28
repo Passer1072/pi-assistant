@@ -2,20 +2,7 @@ import "@xyflow/react/dist/style.css";
 
 import type React from "react";
 import { useEffect, useLayoutEffect, useRef, useState } from "react";
-import {
-	Background,
-	Connection,
-	Controls,
-	Edge,
-	Handle,
-	MiniMap,
-	Node,
-	NodeProps,
-	Position,
-	ReactFlow,
-	useEdgesState,
-	useNodesState,
-} from "@xyflow/react";
+import { Background, Connection, Controls, MiniMap, ReactFlow, useEdgesState, useNodesState } from "@xyflow/react";
 import { LayoutGrid, Loader2, Minus, Play, Plus, Save, Send, Square, Trash2, X } from "lucide-react";
 import type {
 	AutomationDraft,
@@ -24,33 +11,24 @@ import type {
 	AutomationProgressEvent,
 	AutomationRunRecord,
 	TimelineItem,
-	FlowEdge,
 	FlowNode,
 	FlowNodeKind,
 } from "./types.ts";
-import { createEmptyAutomationDraft, flowKindLabel, formatRunStatus } from "./types.ts";
+import { createEmptyAutomationDraft, flowKindLabel } from "./types.ts";
+import {
+	type FlowGraphEdge,
+	type FlowGraphNode,
+	FLOW_NODE_TYPES,
+	flowNodeColor,
+	toFlowEdges,
+	toFlowNodes,
+} from "./FlowGraph.tsx";
 import type { ChatMessageView } from "../../../src/shared/types.ts";
 import { ConversationThread } from "../chat/ConversationThread.tsx";
-
-type EditorNodeData = {
-	label: string;
-	kind: FlowNodeKind;
-	instruction?: string;
-	config?: FlowNode["config"];
-	active?: boolean;
-	done?: boolean;
-};
-
-type EditorNode = Node<EditorNodeData>;
-type EditorEdge = Edge;
 
 const WINDOW_PARAMS = new URLSearchParams(window.location.search);
 const QUERY_FLOW_ID = WINDOW_PARAMS.get("flowId") ?? undefined;
 const NODE_KINDS: FlowNodeKind[] = ["start", "task", "condition", "loop", "wait", "end"];
-
-const NODE_TYPES = {
-	automation: AutomationGraphNode,
-};
 
 export function FlowEditorView() {
 	const [flowId, setFlowId] = useState<string | undefined>(QUERY_FLOW_ID);
@@ -67,10 +45,16 @@ export function FlowEditorView() {
 	const [designStreamingThinking, setDesignStreamingThinking] = useState("");
 	const chatScrollRef = useRef<HTMLDivElement | null>(null);
 	const composerRef = useRef<HTMLTextAreaElement | null>(null);
+	// Set when the user interrupts a reply so the in-flight request resolving/rejecting afterward
+	// is treated as an intentional stop rather than a real error.
+	const designAbortedRef = useRef(false);
 	const [runLogs, setRunLogs] = useState<AutomationEditorLogEntry[]>([]);
 	const [activeNodeId, setActiveNodeId] = useState<string | undefined>();
 	const [doneNodeIds, setDoneNodeIds] = useState<Set<string>>(() => new Set());
 	const [activeRun, setActiveRun] = useState<AutomationRunRecord | undefined>();
+	// True from the moment a test run is kicked off until the flow reports a terminal status.
+	// Drives the Test→Interrupt button toggle and the live "running" canvas badge.
+	const [running, setRunning] = useState(false);
 
 	useEffect(() => {
 		const load = async () => {
@@ -141,15 +125,15 @@ export function FlowEditorView() {
 
 	// React Flow owns the live node/edge state so dragging is smooth and never races the
 	// async draft round-trip; the main-process draft stays the source of truth for content.
-	const [rfNodes, setRfNodes, onRfNodesChange] = useNodesState<EditorNode>([]);
-	const [rfEdges, setRfEdges, onRfEdgesChange] = useEdgesState<EditorEdge>([]);
+	const [rfNodes, setRfNodes, onRfNodesChange] = useNodesState<FlowGraphNode>([]);
+	const [rfEdges, setRfEdges, onRfEdgesChange] = useEdgesState<FlowGraphEdge>([]);
 	const selectedNode = draft.nodes.find((node) => node.id === selectedNodeId);
 
 	useEffect(() => {
-		setRfNodes(toReactFlowNodes(draft.nodes, activeNodeId, doneNodeIds));
+		setRfNodes(toFlowNodes(draft.nodes, activeNodeId, doneNodeIds));
 	}, [draft.nodes, activeNodeId, doneNodeIds, setRfNodes]);
 	useEffect(() => {
-		setRfEdges(toReactFlowEdges(draft.edges));
+		setRfEdges(toFlowEdges(draft.edges));
 	}, [draft.edges, setRfEdges]);
 
 	const applyDraftOps = async (ops: AutomationDraftOperation[]) => {
@@ -216,7 +200,7 @@ export function FlowEditorView() {
 	};
 
 	const testRun = async () => {
-		if (!window.desktopAssistant?.automationRun) return;
+		if (!window.desktopAssistant?.automationRun || running) return;
 		setStatusText("");
 		setRunLogs([]);
 		setDoneNodeIds(new Set());
@@ -230,8 +214,11 @@ export function FlowEditorView() {
 				setFlowId(saved.flow.id);
 				applyDraft(saved.draft);
 			}
+			// runAutomation now resolves as soon as the run starts (status "running"); the flow then
+			// executes in the background and streams progress via automation_progress events.
 			const response = await window.desktopAssistant.automationRun({ id: runFlowId, trigger: "test" });
 			setActiveRun(response.run);
+			setRunning(response.run.status === "running");
 			addRunLog({
 				id: response.run.id,
 				timestamp: response.run.startedAt,
@@ -240,27 +227,29 @@ export function FlowEditorView() {
 			});
 		} catch (error) {
 			setStatusText(error instanceof Error ? error.message : String(error));
+			setRunning(false);
 		} finally {
 			setBusy(false);
 		}
 	};
 
 	const cancelRun = async () => {
-		if (!window.desktopAssistant?.automationCancelRun || !activeRun) return;
+		if (!window.desktopAssistant?.automationCancelRun) return;
 		const id = flowId ?? draft.flowId;
 		if (!id) return;
-		setBusy(true);
+		setRunning(false);
+		setActiveNodeId(undefined);
 		try {
-			const run = await window.desktopAssistant.automationCancelRun({ flowId: id, runId: activeRun.id });
+			const run = await window.desktopAssistant.automationCancelRun({ flowId: id, runId: activeRun?.id ?? id });
 			if (run) setActiveRun(run);
 			addRunLog({
 				id: `cancel-${Date.now()}`,
 				timestamp: new Date().toISOString(),
-				message: "测试运行已取消。",
+				message: "测试运行已中断。",
 				status: "cancelled",
 			});
-		} finally {
-			setBusy(false);
+		} catch (error) {
+			setStatusText(error instanceof Error ? error.message : String(error));
 		}
 	};
 
@@ -282,6 +271,7 @@ export function FlowEditorView() {
 		setDesignStreaming("");
 		setDesignStreamingThinking("");
 		setStatusText("");
+		designAbortedRef.current = false;
 		try {
 			const response = await window.desktopAssistant.automationDesignChat({ flowId: flowId ?? draft.flowId, message });
 			setDesignSessionId(response.sessionId);
@@ -291,16 +281,32 @@ export function FlowEditorView() {
 			setDesignStreamingThinking(response.streamingThinking);
 			applyDraft(response.snapshot);
 		} catch (error) {
-			const text = error instanceof Error ? error.message : String(error);
-			setStatusText(text);
-			setDesignMessages((current) => [
-				...current,
-				{ id: `error-${Date.now()}`, role: "system", text: `出错：${text}`, timestamp: Date.now(), order: Date.now() },
-			]);
+			// A user-initiated interrupt may surface here as a rejection — that's not a real error.
+			if (!designAbortedRef.current) {
+				const text = error instanceof Error ? error.message : String(error);
+				setStatusText(text);
+				setDesignMessages((current) => [
+					...current,
+					{ id: `error-${Date.now()}`, role: "system", text: `出错：${text}`, timestamp: Date.now(), order: Date.now() },
+				]);
+			}
 		} finally {
 			setDesignBusy(false);
 			setDesignStreaming("");
 			setDesignStreamingThinking("");
+			designAbortedRef.current = false;
+		}
+	};
+
+	// Interrupt the design assistant mid-reply, mirroring the main chat's stop control. The
+	// in-flight automationDesignChat promise then resolves with whatever was produced so far.
+	const abortDesignChat = async () => {
+		if (!window.desktopAssistant?.abort || !designSessionId) return;
+		designAbortedRef.current = true;
+		try {
+			await window.desktopAssistant.abort({ sessionId: designSessionId });
+		} catch (error) {
+			console.warn("Abort design chat failed:", error);
 		}
 	};
 
@@ -350,24 +356,36 @@ export function FlowEditorView() {
 								<Save size={14} />
 								<span>保存</span>
 							</button>
-							<button type="button" className="automation-primary-btn" onClick={() => void testRun()} disabled={busy || !draft.name.trim()}>
-								<Play size={14} />
-								<span>测试</span>
-							</button>
-							{activeRun?.status === "running" ? (
-								<button type="button" className="automation-ghost-btn" onClick={() => void cancelRun()} disabled={busy}>
+							{running ? (
+								<button type="button" className="automation-danger-btn" onClick={() => void cancelRun()}>
 									<Square size={14} />
-									<span>取消</span>
+									<span>中断</span>
 								</button>
-							) : null}
+							) : (
+								<button
+									type="button"
+									className="automation-primary-btn"
+									onClick={() => void testRun()}
+									disabled={busy || !draft.name.trim()}
+								>
+									<Play size={14} />
+									<span>测试</span>
+								</button>
+							)}
 						</div>
 					</div>
 
 					<div className="automation-editor-canvas-frame">
+						{running ? (
+							<div className="automation-run-badge">
+								<Loader2 size={13} className="spin" />
+								<span>运行中{activeNodeId ? ` · ${draft.nodes.find((node) => node.id === activeNodeId)?.label ?? activeNodeId}` : ""}</span>
+							</div>
+						) : null}
 						<ReactFlow
 							nodes={rfNodes}
 							edges={rfEdges}
-							nodeTypes={NODE_TYPES}
+							nodeTypes={FLOW_NODE_TYPES}
 							onNodesChange={onRfNodesChange}
 							onEdgesChange={onRfEdgesChange}
 							onNodeDragStop={(_, node) => persistPositions([node])}
@@ -396,7 +414,7 @@ export function FlowEditorView() {
 								pannable
 								zoomable
 								maskColor="rgba(8, 10, 16, 0.45)"
-								nodeColor={(node) => nodeColor((node.data as EditorNodeData).kind)}
+								nodeColor={(node) => flowNodeColor((node.data as FlowGraphNode["data"]).kind)}
 								className="automation-editor-minimap"
 							/>
 							<Controls className="automation-editor-controls" />
@@ -570,15 +588,27 @@ export function FlowEditorView() {
 									}
 								}}
 							/>
-							<button
-								type="submit"
-								className="automation-composer-send"
-								disabled={designBusy || !chatInput.trim()}
-								aria-label="发送给设计助手"
-								title="发送给设计助手"
-							>
-								{designBusy ? <Loader2 size={16} className="spin" /> : <Send size={16} />}
-							</button>
+							{designBusy ? (
+								<button
+									type="button"
+									className="automation-composer-send stop"
+									onClick={() => void abortDesignChat()}
+									aria-label="中断回复"
+									title="中断回复"
+								>
+									<Square size={15} />
+								</button>
+							) : (
+								<button
+									type="submit"
+									className="automation-composer-send"
+									disabled={!chatInput.trim()}
+									aria-label="发送给设计助手"
+									title="发送给设计助手"
+								>
+									<Send size={16} />
+								</button>
+							)}
 						</form>
 					</section>
 					{statusText ? <div className="automation-status-text">{statusText}</div> : null}
@@ -607,6 +637,7 @@ export function FlowEditorView() {
 		if (progress.kind === "finish" && progress.status) {
 			setActiveRun((current) => (current ? { ...current, status: progress.status as AutomationRunRecord["status"], summary: progress.summary } : current));
 			setActiveNodeId(undefined);
+			setRunning(false);
 		}
 		addRunLog({
 			id: `${progress.kind}-${progress.nodeId ?? progress.runId}-${Date.now()}`,
@@ -615,60 +646,5 @@ export function FlowEditorView() {
 			status,
 			message: progress.summary ?? progress.message ?? progress.choice ?? `${progress.kind} ${progress.phase ?? ""}`.trim(),
 		});
-	}
-}
-
-function AutomationGraphNode({ data }: NodeProps<EditorNode>) {
-	return (
-		<div className={`automation-flow-node kind-${data.kind} ${data.active ? "active" : ""} ${data.done ? "done" : ""}`}>
-			<Handle type="target" position={Position.Left} />
-			<div className="automation-flow-node-kind">{flowKindLabel(data.kind)}</div>
-			<div className="automation-flow-node-label">{data.label}</div>
-			{data.instruction ? <div className="automation-flow-node-detail">{data.instruction}</div> : null}
-			<Handle type="source" position={Position.Right} />
-		</div>
-	);
-}
-
-function toReactFlowNodes(nodes: FlowNode[], activeNodeId: string | undefined, doneNodeIds: Set<string>): EditorNode[] {
-	return nodes.map((node) => ({
-		id: node.id,
-		type: "automation",
-		position: node.position,
-		data: {
-			label: node.label,
-			kind: node.kind,
-			instruction: node.instruction,
-			config: node.config,
-			active: activeNodeId === node.id,
-			done: doneNodeIds.has(node.id),
-		},
-	}));
-}
-
-function toReactFlowEdges(edges: FlowEdge[]): EditorEdge[] {
-	return edges.map((edge) => ({
-		id: edge.id,
-		source: edge.source,
-		target: edge.target,
-		label: edge.label,
-		animated: true,
-	}));
-}
-
-function nodeColor(kind: FlowNodeKind): string {
-	switch (kind) {
-		case "start":
-			return "rgba(74, 222, 128, 0.7)";
-		case "condition":
-			return "rgba(245, 185, 107, 0.75)";
-		case "loop":
-			return "rgba(190, 132, 255, 0.7)";
-		case "wait":
-			return "rgba(125, 211, 252, 0.7)";
-		case "end":
-			return "rgba(255, 118, 118, 0.7)";
-		case "task":
-			return "rgba(106, 169, 255, 0.7)";
 	}
 }

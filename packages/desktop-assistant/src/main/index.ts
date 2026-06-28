@@ -8,20 +8,31 @@ import {
 	BrowserWindow,
 	type Event as ElectronEvent,
 	ipcMain,
+	net,
 	type RenderProcessGoneDetails,
 	type WebContentsConsoleMessageEventParams,
 } from "electron";
+
+// Override global fetch so ALL main-process requests (OpenAI SDK, deepseek.ts, etc.)
+// inherit system proxy settings (VPN proxy mode, PAC scripts) via Chromium's network stack.
+// Node.js built-in fetch (undici) ignores system proxy; Electron's net.fetch does not.
+globalThis.fetch = (input, init?) => net.fetch(input as string, init as RequestInit);
+
 import { DesktopAgentService } from "../agent/desktop-agent-service.ts";
 import { WindowsDesktopAutomationHost } from "../desktop/automation-host.ts";
 import { createSerializedDesktopHost, DesktopActionScheduler } from "../desktop/desktop-action-scheduler.ts";
 import { PowerShellService } from "../desktop/powershell-service.ts";
+import { readInstalledOfficeChatBridgeTokens } from "../plugins/software-plugin-manager.ts";
 import type { AppLaunchCacheView } from "../shared/types.ts";
 import { DESKTOP_ASSISTANT_CHANNELS } from "../shared/types.ts";
 import { KwsService } from "../voice/kws-service.ts";
 import { VoiceBridge } from "../voice/voice-bridge.ts";
 import { BuiltInBrowserController } from "./built-in-browser-controller.ts";
+import { ExternalAppController } from "./external-app-controller.ts";
+import { ExternalAppRegistry } from "./external-app-registry.ts";
 import { registerDesktopAssistantIpc } from "./ipc.ts";
 import { LogStore } from "./log-store.ts";
+import { OfficeChatBridge } from "./office-chat-bridge.ts";
 import { WakeWordModelStore } from "./wake-word-model-store.ts";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
@@ -42,10 +53,26 @@ type DiagnosticLevel = "debug" | "info" | "warning" | "error";
 const legacyConsoleLevels: DiagnosticLevel[] = ["debug", "info", "warning", "error"];
 
 let processDiagnosticsInstalled = false;
+let isQuitting = false;
 
 function addWindow(window: BrowserWindow, label: string): void {
 	windows.add(window);
 	attachWindowDiagnostics(window, label);
+}
+
+/**
+ * Closing the main window shuts down the entire app: force-close every other
+ * independent window (「更多应用」external app windows, built-in browser, manager
+ * windows) so nothing is left running, then quit. Force `destroy()` instead of
+ * `close()` so a remote page's beforeunload handler can't block the shutdown.
+ */
+function quitEntireApp(): void {
+	if (isQuitting) return;
+	isQuitting = true;
+	for (const win of BrowserWindow.getAllWindows()) {
+		if (!win.isDestroyed()) win.destroy();
+	}
+	app.quit();
 }
 
 function attachWindowDiagnostics(window: BrowserWindow, label: string): void {
@@ -170,6 +197,9 @@ async function createMainWindow(): Promise<BrowserWindow> {
 	addWindow(window, "main");
 	window.on("closed", () => {
 		windows.delete(window);
+		// Main window is the app's lifecycle owner: closing it tears down every
+		// other independent window and quits the whole app.
+		quitEntireApp();
 	});
 
 	const psService = new PowerShellService(
@@ -179,10 +209,11 @@ async function createMainWindow(): Promise<BrowserWindow> {
 	// Serialize world-mutating desktop actions across parallel conversations so two
 	// agents can never fight over the single shared mouse / keyboard / foreground window.
 	const desktopActionScheduler = new DesktopActionScheduler();
+	const agentDir = join(app.getPath("userData"), "agent");
 	const service = new DesktopAgentService({
 		cwd: process.cwd(),
 		saveDir: join(app.getPath("userData"), "conversations"),
-		agentDir: join(app.getPath("userData"), "agent"),
+		agentDir,
 		memoDir: join(app.getPath("userData"), "memos"),
 		automationDir: join(app.getPath("userData"), "automations"),
 		host: createSerializedDesktopHost(new WindowsDesktopAutomationHost(psService), desktopActionScheduler),
@@ -209,12 +240,37 @@ async function createMainWindow(): Promise<BrowserWindow> {
 	// Let the agent's browser_* tools drive the built-in / native browsers, routing through the
 	// user's configured default browser unless a one-time override is requested.
 	service.setBrowserHost(builtInBrowserController.toolHost(() => service.snapshot().settings.browser.defaultBrowser));
+	// 「更多应用」: external local web apps shown in their own windows and driven by the AI.
+	const externalAppController = new ExternalAppController({
+		registry: new ExternalAppRegistry(agentDir),
+		addWindow,
+		emit: (event) => {
+			for (const win of windows) {
+				if (!win.isDestroyed()) win.webContents.send(DESKTOP_ASSISTANT_CHANNELS.moreAppEvent, event);
+			}
+		},
+	});
+	service.setExternalAppHost(externalAppController.toolHost());
+	app.once("before-quit", () => externalAppController.dispose());
+	const officeChatBridge = new OfficeChatBridge({
+		port: 49240,
+		getTokens: () => readInstalledOfficeChatBridgeTokens(agentDir),
+		service,
+	});
+	void officeChatBridge.listen().catch((error: unknown) => {
+		console.error("Office chat bridge failed to start:", error);
+		service.reportError(error);
+	});
+	app.once("before-quit", () => {
+		void officeChatBridge.close();
+	});
 	registerDesktopAssistantIpc({
 		ipcMain,
 		mainWindow: window,
 		getWindows: () => windows,
 		service,
 		builtInBrowserController,
+		externalAppController,
 		voiceBridge: new VoiceBridge(),
 		logStore,
 		wakeWordModelStore: new WakeWordModelStore(join(app.getPath("userData"), "wake-word-models")),
@@ -245,6 +301,10 @@ async function createMainWindow(): Promise<BrowserWindow> {
 	void service.initialize().catch((error: unknown) => {
 		console.error("Desktop assistant initialization failed:", error);
 		service.reportError(error);
+	});
+	// Launch any "更多应用" apps the user marked auto-start (fire-and-forget).
+	void externalAppController.startAutoStartApps().catch((error: unknown) => {
+		console.error("Auto-start of more-apps failed:", error);
 	});
 	return window;
 }
@@ -733,6 +793,11 @@ button{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer
 </div>
 <div class="log-wrap" id="logWrap"><div class="empty-hint" id="emptyHint">Waiting for events...</div></div>
 <script>
+// F2: bound the in-window log buffer. The full log is always on disk
+// (session-*.ndjson via LogStore); the window only keeps the most recent
+// MAX_LOG_ENTRIES and drops the oldest. rerender() rebuilds the DOM from the
+// entries array, so capping the array also bounds the rendered node count.
+var MAX_LOG_ENTRIES = 2000;
 var entries = [];
 var filter = '';
 var autoScroll = true;
@@ -892,6 +957,7 @@ function rerender(forceBottom) {
 }
 function appendEntry(e) {
   entries.push(e);
+  if (entries.length > MAX_LOG_ENTRIES) entries.splice(0, entries.length - MAX_LOG_ENTRIES);
   rerender();
 }
 function setFilter(btn, f) {
@@ -1127,6 +1193,12 @@ button{border:0;background:transparent;color:inherit;font:inherit;cursor:pointer
 </div>
 
 <script>
+// F2: bound the in-window log buffer. The full log is always on disk
+// (session-*.ndjson via LogStore); the window keeps only the most recent
+// MAX_LOG_ENTRIES. This window appends rows incrementally, so we evict both the
+// oldest array entries and the oldest DOM rows. totalCount keeps counting all
+// events seen for the header counter.
+var MAX_LOG_ENTRIES = 2000;
 var entries = [];
 var filter = '';
 var autoScroll = true;
@@ -1190,7 +1262,12 @@ function appendEntry(e) {
   entries.push(e);
   totalCount++;
   document.getElementById('cnt').textContent = totalCount;
+  if (entries.length > MAX_LOG_ENTRIES) entries.splice(0, entries.length - MAX_LOG_ENTRIES);
   if (!filter || e.cat === filter) renderRow(e);
+  var wrap = document.getElementById('logWrap');
+  if (wrap) {
+    while (wrap.childElementCount > MAX_LOG_ENTRIES) wrap.removeChild(wrap.firstElementChild);
+  }
 }
 
 function setFilter(btn, f) {

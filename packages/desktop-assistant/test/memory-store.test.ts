@@ -1,4 +1,4 @@
-import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -18,6 +18,9 @@ describe("MemoryStore", () => {
 			});
 
 			expect(created).toBeDefined();
+			expect(created?.schemaVersion).toBe(2);
+			expect(created?.scope).toBe("workspace");
+			expect(created?.source).toBe("auto");
 			expect(store.list()).toHaveLength(1);
 			const updated = store.update(created!.id, {
 				text: "用户偏好：以后都用中文直接回答",
@@ -92,6 +95,37 @@ describe("MemoryStore", () => {
 			expect(store.list({ includeArchived: true }).some((memory) => memory.archived)).toBe(true);
 			expect(secret).toBeUndefined();
 			expect(readFileSync(getMemoryStorePaths(workspace.cwd).memoriesFile, "utf-8")).not.toContain("sk-123456");
+		} finally {
+			workspace.cleanup();
+		}
+	});
+
+	it("migrates v1 records to schema v2 defaults", () => {
+		const workspace = createTempWorkspace();
+		try {
+			const paths = getMemoryStorePaths(workspace.cwd);
+			mkdirSync(paths.memoryDir, { recursive: true });
+			const legacy = {
+				schemaVersion: 1,
+				id: "legacy-1",
+				kind: "preference",
+				text: "User preference: keep answers concise",
+				confidence: 0.7,
+				createdAt: "2026-01-01T00:00:00.000Z",
+				updatedAt: "2026-01-01T00:00:00.000Z",
+				useCount: 0,
+				tags: ["style"],
+				archived: false,
+			};
+			writeFileSync(paths.memoriesFile, `${JSON.stringify(legacy)}\n`, "utf-8");
+			const store = new MemoryStore(workspace.cwd);
+
+			expect(store.list()[0]).toMatchObject({
+				schemaVersion: 2,
+				id: "legacy-1",
+				scope: "workspace",
+				source: "auto",
+			});
 		} finally {
 			workspace.cleanup();
 		}

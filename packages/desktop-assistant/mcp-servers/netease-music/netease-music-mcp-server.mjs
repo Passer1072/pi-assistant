@@ -196,7 +196,14 @@ async function evalInPage(expression) {
   if (resp.error) throw new Error(`CDP error: ${JSON.stringify(resp.error)}`);
   const r = resp.result || {};
   if (r.exceptionDetails) {
-    throw new Error(`JS exception: ${r.exceptionDetails.exception?.description || r.exceptionDetails.text}`);
+    const ex = r.exceptionDetails.exception;
+    // description is meaningful for Error instances but useless for plain thrown objects ("Object")
+    const desc = (ex?.description && ex.description !== "Object" ? ex.description : null)
+      ?? (ex?.value != null ? JSON.stringify(ex.value) : null)
+      ?? (ex?.className && ex.className !== "Object" ? `[${ex.className}]` : null)
+      ?? r.exceptionDetails.text
+      ?? "unknown JS exception";
+    throw new Error(`JS exception: ${desc}`);
   }
   if (r.result && r.result.subtype === "error") {
     throw new Error(`JS error: ${r.result.description}`);
@@ -549,12 +556,24 @@ tool("get_user_playlists", "Get my playlists", "List the logged-in user's playli
   async ({ limit = 100 }) => {
     await ensureBootstrapped(true);
     const expr = String.raw`(async function(){
-      const req=window.__ncm_request, store=window.__ncm_store;
-      const uid=(store.getState().playingList||{}).latestUid || (store.getState().app&&store.getState().app.userId);
-      const r=await req({url:'/api/user/playlist',method:'POST'})({uid:uid,limit:${Number(limit)},offset:0,includeVideo:true});
-      return {uid:uid, playlists:((r&&r.playlist)||[]).map(p=>({id:p.id,name:p.name,trackCount:p.trackCount,subscribed:p.subscribed,isFavorites:p.specialType===5,creator:p.creator&&p.creator.nickname}))};
+      try {
+        const req=window.__ncm_request, store=window.__ncm_store;
+        const s=store.getState();
+        const uid=(s.playingList||{}).latestUid
+          || (s.app&&s.app.userId)
+          || (s.user&&s.user.userId)
+          || (s.login&&s.login.profile&&s.login.profile.userId)
+          || (s.currentUser&&s.currentUser.userId);
+        if(!uid) return {ok:false, message:'未找到用户ID，请确保网易云已完全登录后重试'};
+        const r=await req({url:'/api/user/playlist',method:'POST'})({uid:Number(uid),limit:${Number(limit)},offset:0,includeVideo:true});
+        if(!r) return {ok:false, message:'API返回空响应'};
+        if(r.code && r.code!==200) return {ok:false, message:'API错误 code='+r.code+(r.message?': '+r.message:'')};
+        return {ok:true, uid:String(uid), playlists:((r.playlist)||[]).map(p=>({id:p.id,name:p.name,trackCount:p.trackCount,subscribed:p.subscribed,isFavorites:p.specialType===5,creator:p.creator&&p.creator.nickname}))};
+      } catch(e) {
+        return {ok:false, message:(e&&(e.message||e.msg||e.error))||(typeof e==='string'?e:JSON.stringify(e))||'unknown error'};
+      }
     })()`;
-    return { ok: true, ...(await evalInPage(expr)) };
+    return await evalInPage(expr);
   });
 
 tool("get_playlist_tracks", "Get playlist tracks", "Get the tracks of a playlist by id.",
@@ -826,11 +845,16 @@ tool("ncm_api", "Call NetEase API", "Call any NetEase Cloud Music Web API endpoi
   async ({ url, method = "POST", params = {} }) => {
     await ensureBootstrapped(true);
     const expr = String.raw`(async function(){
-      const req=window.__ncm_request;
-      const r=await req({url:${JSON.stringify(url)},method:${JSON.stringify(method)}})(${JSON.stringify(params)});
-      return r;
+      try {
+        const req=window.__ncm_request;
+        const r=await req({url:${JSON.stringify(url)},method:${JSON.stringify(method)}})(${JSON.stringify(params)});
+        return {ok:true, result:r};
+      } catch(e) {
+        return {ok:false, message:(e&&(e.message||e.msg||e.error))||(typeof e==='string'?e:JSON.stringify(e))||'unknown error'};
+      }
     })()`;
-    return { ok: true, url, result: await evalInPage(expr) };
+    const r = await evalInPage(expr);
+    return { url, ...r };
   });
 
 tool("ncm_dispatch", "Dispatch redux action", "Dispatch any NetEase dva/redux action (e.g. 'playing/pause'). Advanced — see RESEARCH.md for the action map.",

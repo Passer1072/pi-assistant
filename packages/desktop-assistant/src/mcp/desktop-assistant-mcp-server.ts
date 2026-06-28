@@ -51,6 +51,8 @@ const memoryUpdateSchema = z
 		enabled: z.boolean().optional(),
 		maxInjected: z.number().int().min(0).max(20).optional(),
 		autoExtract: z.boolean().optional(),
+		allowExternalContextExtraction: z.boolean().optional(),
+		allowAssistantDerivedFacts: z.boolean().optional(),
 	})
 	.strict();
 
@@ -552,6 +554,8 @@ function mergeMemorySettings(current: MemorySettings, update: z.infer<typeof mem
 		enabled: update.enabled ?? current.enabled,
 		maxInjected: update.maxInjected ?? current.maxInjected,
 		autoExtract: update.autoExtract ?? current.autoExtract,
+		allowExternalContextExtraction: update.allowExternalContextExtraction ?? current.allowExternalContextExtraction,
+		allowAssistantDerivedFacts: update.allowAssistantDerivedFacts ?? current.allowAssistantDerivedFacts,
 	};
 }
 

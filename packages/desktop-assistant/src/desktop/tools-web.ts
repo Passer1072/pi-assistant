@@ -1,8 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { net } from "electron";
 import { Type } from "typebox";
 import type { DesktopToolResult, SandboxNetworkSettings, WebSearchMode, WebSearchProvider } from "../shared/types.ts";
 import { evaluateNetworkUrl } from "./sandbox/policy-engine.ts";
+
+// Use Electron's net.fetch so requests inherit the system proxy (VPN / PAC) automatically.
+// Node.js built-in fetch (undici) ignores system proxy settings.
+const proxyFetch: typeof fetch = (input, init?) => net.fetch(input as string, init as RequestInit);
 
 export interface WebToolOptions {
 	mode: WebSearchMode;
@@ -15,6 +20,8 @@ export interface WebToolOptions {
 	searxngUrl?: string;
 	/** Sandbox network policy (SSRF guard, domain allow/deny) applied to web_fetch. */
 	network?: SandboxNetworkSettings;
+	/** Override fetch for tests. Defaults to Electron net.fetch for system proxy support. */
+	fetchImpl?: typeof fetch;
 }
 
 // ─── Result shape ──────────────────────────────────────────────────────────
@@ -25,15 +32,24 @@ interface SearchResult {
 	snippet: string;
 }
 
+const WEB_FETCH_MAX_REDIRECTS = 5;
+
+const webFetchHeaders = {
+	"User-Agent":
+		"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+	Accept: "text/html,application/xhtml+xml,text/plain,*/*",
+	"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+};
+
 // ─── Provider implementations ──────────────────────────────────────────────
 
 /**
  * DuckDuckGo Instant Answer API — free, no key required.
  * Returns instant answers + related topics. Not a full-text web search.
  */
-async function ddgSearch(query: string, count: number): Promise<SearchResult[]> {
+async function ddgSearch(query: string, count: number, fetchImpl: typeof fetch): Promise<SearchResult[]> {
 	const url = `https://api.duckduckgo.com/?q=${encodeURIComponent(query)}&format=json&no_html=1&skip_disambig=1&t=pi-desktop`;
-	const res = await fetch(url, {
+	const res = await fetchImpl(url, {
 		headers: { "User-Agent": "Pi-Desktop-Assistant/1.0" },
 		signal: AbortSignal.timeout(12_000),
 	});
@@ -69,9 +85,14 @@ async function ddgSearch(query: string, count: number): Promise<SearchResult[]> 
  * Free tier: 1 000 queries/month.
  * Key type: Ocp-Apim-Subscription-Key
  */
-async function bingSearch(query: string, count: number, apiKey: string): Promise<SearchResult[]> {
+async function bingSearch(
+	query: string,
+	count: number,
+	apiKey: string,
+	fetchImpl: typeof fetch,
+): Promise<SearchResult[]> {
 	const url = `https://api.bing.microsoft.com/v7.0/search?q=${encodeURIComponent(query)}&count=${count}&responseFilter=Webpages`;
-	const res = await fetch(url, {
+	const res = await fetchImpl(url, {
 		headers: { "Ocp-Apim-Subscription-Key": apiKey },
 		signal: AbortSignal.timeout(12_000),
 	});
@@ -87,14 +108,20 @@ async function bingSearch(query: string, count: number, apiKey: string): Promise
  * Free tier: 100 queries/day.
  * Requires: API key (Cloud Console) + Search Engine ID (cx).
  */
-async function googleSearch(query: string, count: number, apiKey: string, cx: string): Promise<SearchResult[]> {
+async function googleSearch(
+	query: string,
+	count: number,
+	apiKey: string,
+	cx: string,
+	fetchImpl: typeof fetch,
+): Promise<SearchResult[]> {
 	const url =
 		`https://www.googleapis.com/customsearch/v1` +
 		`?key=${encodeURIComponent(apiKey)}` +
 		`&cx=${encodeURIComponent(cx)}` +
 		`&q=${encodeURIComponent(query)}` +
 		`&num=${Math.min(count, 10)}`;
-	const res = await fetch(url, { signal: AbortSignal.timeout(12_000) });
+	const res = await fetchImpl(url, { signal: AbortSignal.timeout(12_000) });
 	if (!res.ok) throw new Error(`Google API ${res.status}: ${await res.text().catch(() => "")}`);
 	const data = (await res.json()) as {
 		items?: Array<{ title: string; link: string; snippet: string }>;
@@ -106,8 +133,13 @@ async function googleSearch(query: string, count: number, apiKey: string, cx: st
  * Tavily — AI-native search API, designed for LLM agents.
  * Free tier: 1 000 queries/month. Sign up at app.tavily.com.
  */
-async function tavilySearch(query: string, count: number, apiKey: string): Promise<SearchResult[]> {
-	const res = await fetch("https://api.tavily.com/search", {
+async function tavilySearch(
+	query: string,
+	count: number,
+	apiKey: string,
+	fetchImpl: typeof fetch,
+): Promise<SearchResult[]> {
+	const res = await fetchImpl("https://api.tavily.com/search", {
 		method: "POST",
 		headers: { "Content-Type": "application/json" },
 		body: JSON.stringify({ api_key: apiKey, query, max_results: count, search_depth: "basic" }),
@@ -128,9 +160,14 @@ async function tavilySearch(query: string, count: number, apiKey: string): Promi
  * Brave Search API — independent index, not reliant on Google/Bing.
  * Free tier: 2 000 queries/month. Sign up at brave.com/search/api.
  */
-async function braveSearch(query: string, count: number, apiKey: string): Promise<SearchResult[]> {
+async function braveSearch(
+	query: string,
+	count: number,
+	apiKey: string,
+	fetchImpl: typeof fetch,
+): Promise<SearchResult[]> {
 	const url = `https://api.search.brave.com/res/v1/web/search?q=${encodeURIComponent(query)}&count=${Math.min(count, 20)}`;
-	const res = await fetch(url, {
+	const res = await fetchImpl(url, {
 		headers: { "X-Subscription-Token": apiKey, Accept: "application/json" },
 		signal: AbortSignal.timeout(12_000),
 	});
@@ -150,8 +187,13 @@ async function braveSearch(query: string, count: number, apiKey: string): Promis
  * Free tier: 2 500 queries (one-time credit).
  * Key: X-API-KEY header.
  */
-async function serperSearch(query: string, count: number, apiKey: string): Promise<SearchResult[]> {
-	const res = await fetch("https://google.serper.dev/search", {
+async function serperSearch(
+	query: string,
+	count: number,
+	apiKey: string,
+	fetchImpl: typeof fetch,
+): Promise<SearchResult[]> {
+	const res = await fetchImpl("https://google.serper.dev/search", {
 		method: "POST",
 		headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
 		body: JSON.stringify({ q: query, num: Math.min(count, 10) }),
@@ -168,12 +210,17 @@ async function serperSearch(query: string, count: number, apiKey: string): Promi
  * SearXNG — self-hosted meta-search engine (JSON API).
  * No key required; just the instance URL.
  */
-async function searxngSearch(query: string, count: number, baseUrl: string): Promise<SearchResult[]> {
+async function searxngSearch(
+	query: string,
+	count: number,
+	baseUrl: string,
+	fetchImpl: typeof fetch,
+): Promise<SearchResult[]> {
 	const u = new URL("/search", baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`);
 	u.searchParams.set("q", query);
 	u.searchParams.set("format", "json");
 	u.searchParams.set("categories", "general");
-	const res = await fetch(u.toString(), {
+	const res = await fetchImpl(u.toString(), {
 		headers: { "User-Agent": "Pi-Desktop-Assistant/1.0" },
 		signal: AbortSignal.timeout(12_000),
 	});
@@ -189,36 +236,40 @@ async function runSearch(
 	query: string,
 	count: number,
 	opts: WebToolOptions,
+	fetchImpl: typeof fetch,
 ): Promise<{ provider: string; results: SearchResult[] }> {
 	switch (opts.provider) {
 		case "bing": {
 			if (!opts.apiKey) throw new Error("Bing 搜索需要配置 API Key（Ocp-Apim-Subscription-Key）");
-			return { provider: "Bing", results: await bingSearch(query, count, opts.apiKey) };
+			return { provider: "Bing", results: await bingSearch(query, count, opts.apiKey, fetchImpl) };
 		}
 		case "google": {
 			if (!opts.apiKey) throw new Error("Google 搜索需要配置 API Key");
 			if (!opts.googleCx) throw new Error("Google 搜索需要配置搜索引擎 ID（cx）");
-			return { provider: "Google", results: await googleSearch(query, count, opts.apiKey, opts.googleCx) };
+			return {
+				provider: "Google",
+				results: await googleSearch(query, count, opts.apiKey, opts.googleCx, fetchImpl),
+			};
 		}
 		case "tavily": {
 			if (!opts.apiKey) throw new Error("Tavily 搜索需要配置 API Key（从 app.tavily.com 获取）");
-			return { provider: "Tavily", results: await tavilySearch(query, count, opts.apiKey) };
+			return { provider: "Tavily", results: await tavilySearch(query, count, opts.apiKey, fetchImpl) };
 		}
 		case "brave": {
 			if (!opts.apiKey) throw new Error("Brave 搜索需要配置 API Key（从 brave.com/search/api 获取）");
-			return { provider: "Brave", results: await braveSearch(query, count, opts.apiKey) };
+			return { provider: "Brave", results: await braveSearch(query, count, opts.apiKey, fetchImpl) };
 		}
 		case "serper": {
 			if (!opts.apiKey) throw new Error("Serper 搜索需要配置 API Key");
-			return { provider: "Serper", results: await serperSearch(query, count, opts.apiKey) };
+			return { provider: "Serper", results: await serperSearch(query, count, opts.apiKey, fetchImpl) };
 		}
 		case "searxng": {
 			const url = opts.searxngUrl?.trim();
 			if (!url) throw new Error("SearXNG 搜索需要配置实例 URL");
-			return { provider: `SearXNG(${url})`, results: await searxngSearch(query, count, url) };
+			return { provider: `SearXNG(${url})`, results: await searxngSearch(query, count, url, fetchImpl) };
 		}
 		default: // duckduckgo
-			return { provider: "DuckDuckGo", results: await ddgSearch(query, count) };
+			return { provider: "DuckDuckGo", results: await ddgSearch(query, count, fetchImpl) };
 	}
 }
 
@@ -262,6 +313,94 @@ function makeResult(
 	return { content: [{ type: "text", text: JSON.stringify(details) }], details };
 }
 
+class NetworkPolicyError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = "NetworkPolicyError";
+	}
+}
+
+function errorMessage(error: unknown): string {
+	return error instanceof Error ? error.message : String(error);
+}
+
+function assertNetworkAllowed(url: string, network?: SandboxNetworkSettings): void {
+	if (!network) return;
+	const verdict = evaluateNetworkUrl(url, network);
+	if (!verdict.allowed) {
+		throw new NetworkPolicyError(verdict.reason ?? "Network access denied by sandbox policy");
+	}
+}
+
+function normalizeRedirectUrl(location: string, currentUrl: string): string {
+	const from = new URL(currentUrl);
+	const next = new URL(location, from);
+	if (
+		next.protocol === "http:" &&
+		next.port === "443" &&
+		next.hostname.toLowerCase() === from.hostname.toLowerCase()
+	) {
+		next.protocol = "https:";
+		next.port = "";
+	}
+	return next.toString();
+}
+
+function slashRetryUrl(url: string): string | undefined {
+	try {
+		const parsed = new URL(url);
+		if (parsed.protocol !== "https:" || parsed.pathname.endsWith("/")) return undefined;
+		parsed.pathname = `${parsed.pathname}/`;
+		return parsed.toString();
+	} catch {
+		return undefined;
+	}
+}
+
+async function fetchWithRedirects(
+	url: string,
+	fetchImpl: typeof fetch,
+	network?: SandboxNetworkSettings,
+): Promise<Response> {
+	let currentUrl = url;
+	for (let redirects = 0; redirects <= WEB_FETCH_MAX_REDIRECTS; redirects++) {
+		assertNetworkAllowed(currentUrl, network);
+		const response = await fetchImpl(currentUrl, {
+			headers: webFetchHeaders,
+			signal: AbortSignal.timeout(15_000),
+			redirect: "manual",
+		});
+		if (response.status < 300 || response.status >= 400) return response;
+		const location = response.headers.get("location");
+		if (!location) throw new Error(`HTTP ${response.status} redirect without Location`);
+		if (redirects === WEB_FETCH_MAX_REDIRECTS) {
+			throw new Error(`Too many redirects while fetching ${url}`);
+		}
+		currentUrl = normalizeRedirectUrl(location, currentUrl);
+	}
+	throw new Error(`Too many redirects while fetching ${url}`);
+}
+
+async function fetchDirectWithRecovery(
+	url: string,
+	fetchImpl: typeof fetch,
+	network?: SandboxNetworkSettings,
+): Promise<Response> {
+	try {
+		return await fetchWithRedirects(url, fetchImpl, network);
+	} catch (error) {
+		if (error instanceof NetworkPolicyError) throw error;
+		const retryUrl = slashRetryUrl(url);
+		if (!retryUrl) throw error;
+		try {
+			return await fetchWithRedirects(retryUrl, fetchImpl, network);
+		} catch (retryError) {
+			if (retryError instanceof NetworkPolicyError) throw retryError;
+			throw new Error(`${errorMessage(error)}; slash retry failed: ${errorMessage(retryError)}`);
+		}
+	}
+}
+
 function modeGuidelines(mode: WebSearchMode, provider: WebSearchProvider): string[] {
 	const providerNote =
 		provider === "duckduckgo" ? "（使用 DuckDuckGo 即时答案，适合事实性查询）" : `（使用 ${provider} 全文搜索）`;
@@ -298,6 +437,7 @@ const webFetchSchema = Type.Object({
 export function createWebTools(options: WebToolOptions): ToolDefinition[] {
 	if (options.mode === "off") return [];
 
+	const fetchImpl = options.fetchImpl ?? proxyFetch;
 	const guidelines = modeGuidelines(options.mode, options.provider);
 
 	const webSearchTool = defineTool({
@@ -312,7 +452,7 @@ export function createWebTools(options: WebToolOptions): ToolDefinition[] {
 		execute: async (_id, params) => {
 			const count = Math.max(1, Math.min(10, params.maxResults ?? 5));
 			try {
-				const { provider, results } = await runSearch(params.query, count, options);
+				const { provider, results } = await runSearch(params.query, count, options, fetchImpl);
 				return makeResult(
 					"Web search",
 					params.query,
@@ -346,41 +486,21 @@ export function createWebTools(options: WebToolOptions): ToolDefinition[] {
 			const trim = (text: string) =>
 				text.length > maxChars ? `${text.slice(0, maxChars)}\n…[截断，共 ${text.length} 字符]` : text;
 
-			// Sandbox network policy: SSRF guard + domain allow/deny.
-			if (options.network) {
-				const verdict = evaluateNetworkUrl(params.url, options.network);
-				if (!verdict.allowed) {
-					return makeResult(
-						"Fetch web page",
-						params.url,
-						false,
-						undefined,
-						verdict.reason ?? "网络访问被沙箱策略拒绝",
-					);
-				}
-			}
-
 			// Primary: direct fetch
 			try {
-				const res = await fetch(params.url, {
-					headers: {
-						"User-Agent":
-							"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
-						Accept: "text/html,application/xhtml+xml,text/plain,*/*",
-						"Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
-					},
-					signal: AbortSignal.timeout(15_000),
-					redirect: "follow",
-				});
+				const res = await fetchDirectWithRecovery(params.url, fetchImpl, options.network);
 				if (!res.ok) throw new Error(`HTTP ${res.status} ${res.statusText}`);
 				const ct = res.headers.get("content-type") ?? "";
 				const raw = await res.text();
 				const text = ct.includes("html") ? htmlToText(raw) : raw;
 				return makeResult("Fetch web page", params.url, true, trim(text));
-			} catch (_directErr) {
+			} catch (directErr) {
 				// Fallback: Jina AI Reader — strips JS, returns clean markdown, free & no key needed
+				if (directErr instanceof NetworkPolicyError) {
+					return makeResult("Fetch web page", params.url, false, undefined, directErr.message);
+				}
 				try {
-					const jinaRes = await fetch(`https://r.jina.ai/${params.url}`, {
+					const jinaRes = await fetchImpl(`https://r.jina.ai/${params.url}`, {
 						headers: { Accept: "text/plain", "X-No-Cache": "true" },
 						signal: AbortSignal.timeout(20_000),
 					});
@@ -393,7 +513,7 @@ export function createWebTools(options: WebToolOptions): ToolDefinition[] {
 						params.url,
 						false,
 						undefined,
-						jinaErr instanceof Error ? jinaErr.message : String(jinaErr),
+						`Direct fetch failed: ${errorMessage(directErr)}; Jina fallback failed: ${errorMessage(jinaErr)}`,
 					);
 				}
 			}

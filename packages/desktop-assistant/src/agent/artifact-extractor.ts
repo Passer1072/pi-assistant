@@ -216,3 +216,58 @@ export function collectArtifacts(
 ): FileArtifact[] {
 	return resolveArtifacts(extractArtifactCandidates(toolName, args, result), options);
 }
+
+/**
+ * "Touched files" for the dynamic window's file facet: every path a tool names
+ * (read, written, or operated on) that currently exists on disk — unlike
+ * `collectArtifacts`, this does NOT gate on producer-ness or turn freshness, so
+ * a tool's input files surface too. Used to build the "涉及文件" tree; the caller
+ * separately marks which entries were *produced* (via `collectArtifacts`).
+ */
+export function collectTouchedFiles(
+	toolName: string,
+	args: unknown,
+	result: unknown,
+	options: { baseDir?: string; limit?: number } = {},
+): FileArtifact[] {
+	const candidates = extractArtifactCandidates(toolName, args, result);
+	const baseDir = options.baseDir || process.cwd();
+	const limit = options.limit ?? 16;
+	const out: FileArtifact[] = [];
+	const seen = new Set<string>();
+
+	for (const candidate of candidates) {
+		if (out.length >= limit) break;
+		let abs: string;
+		try {
+			abs = resolveCandidatePath(candidate.path, baseDir);
+		} catch {
+			continue;
+		}
+		if (!abs || IGNORED_PATH_RE.test(abs)) continue;
+		const dedupeKey = abs.toLowerCase();
+		if (seen.has(dedupeKey)) continue;
+
+		let stat: fs.Stats;
+		try {
+			stat = fs.statSync(abs);
+		} catch {
+			continue; // must exist on disk
+		}
+		const isDirectory = stat.isDirectory();
+		const ext = isDirectory ? "" : path.extname(abs).replace(/^\./, "").toLowerCase();
+		if (!isDirectory && IGNORED_EXTS.has(ext)) continue;
+
+		seen.add(dedupeKey);
+		out.push({
+			path: abs,
+			name: path.basename(abs),
+			ext,
+			sizeBytes: isDirectory ? 0 : stat.size,
+			modifiedAt: stat.mtimeMs,
+			isDirectory,
+		});
+	}
+
+	return out;
+}

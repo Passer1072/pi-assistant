@@ -84,13 +84,19 @@ export function compactTokenSavingMessages(
 		// Freeze-once: a result that has left the recent window keeps a single
 		// byte-stable compacted form for the rest of the session, so the sent
 		// prefix never changes again and DeepSeek's prefix cache keeps hitting.
-		const freezeKey = isRecent ? undefined : frozenFormKey(message);
+		// The frozen form is replayed whenever one exists — independent of the
+		// current recent/old classification. In append-only flows a frozen result
+		// is old forever, but the heap-side rewrite (applyFrozenFormsToMessages)
+		// shrinks the retained message in place, which could otherwise drop it back
+		// under the recent budget and get it recomputed/re-snapshotted. Replaying
+		// the existing freeze keeps the bytes sent to the model byte-identical.
+		const freezeKey = frozenFormKey(message);
 		let resolved: AgentMessage;
 		if (freezeKey && frozenForms?.has(freezeKey)) {
 			resolved = frozenForms.get(freezeKey) as AgentMessage;
 		} else {
 			resolved = compactBrowserToolResult(message, isRecent, options.snapshotStore, telemetry) ?? message;
-			if (freezeKey && frozenForms) {
+			if (!isRecent && freezeKey && frozenForms) {
 				frozenForms.set(freezeKey, resolved);
 			}
 		}
@@ -112,6 +118,39 @@ export function compactTokenSavingMessages(
  */
 function frozenFormKey(message: ToolResultMessage<unknown>): string | undefined {
 	return message.toolCallId ? `${message.toolName}:${message.toolCallId}` : undefined;
+}
+
+/**
+ * Persist already-frozen (out-of-recent-window) browser compactions back into a
+ * retained message array, replacing the full original payloads in place and
+ * dropping the heavy DOM/HTML/screenshot bytes from RAM.
+ *
+ * This is the heap-side counterpart to {@link compactTokenSavingMessages}:
+ * that function builds the *outbound* compacted copy each turn (what the model
+ * receives), while this function rewrites the *retained* `agent.state.messages`
+ * so the originals stop accumulating across a long session.
+ *
+ * Only messages that already have a frozen form are rewritten — i.e. results
+ * that have left the recent window and whose compacted bytes are already what
+ * the model is being sent. Recent-window results are left untouched, so the
+ * bytes sent to the model on the next turn are byte-identical. Returns the
+ * number of messages rewritten.
+ */
+export function applyFrozenFormsToMessages(messages: AgentMessage[], frozenForms: TokenSavingFrozenForms): number {
+	if (frozenForms.size === 0) return 0;
+	let rewritten = 0;
+	for (let index = 0; index < messages.length; index += 1) {
+		const message = messages[index];
+		if (message.role !== "toolResult" || !isBrowserToolResult(message)) continue;
+		const key = frozenFormKey(message);
+		if (!key) continue;
+		const frozen = frozenForms.get(key);
+		if (frozen && frozen !== message) {
+			messages[index] = frozen;
+			rewritten += 1;
+		}
+	}
+	return rewritten;
 }
 
 function collectBrowserToolResultEntries(messages: AgentMessage[]): Array<{ index: number; size: number }> {

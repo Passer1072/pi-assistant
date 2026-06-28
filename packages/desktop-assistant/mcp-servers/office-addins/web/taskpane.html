@@ -1,0 +1,375 @@
+<!doctype html>
+<html lang="zh-CN">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<script src="https://appsforoffice.microsoft.com/lib/1/hosted/office.js"></script>
+		<script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+		<script src="/bridge-client.js" defer></script>
+		<title>桌面助手</title>
+		<style>
+			:root {
+				color-scheme: light;
+				--word-blue: #185abd;
+				--word-blue-strong: #0f4c9f;
+				--word-blue-soft: #eaf2ff;
+				--text: #242424;
+				--muted: #616161;
+				--line: #d6d6d6;
+				--panel: #ffffff;
+				--ok: #107c10;
+			}
+
+			* {
+				box-sizing: border-box;
+			}
+
+			body {
+				margin: 0;
+				min-width: 220px;
+				background: var(--panel);
+				color: var(--text);
+				font: 14px/1.42 "Segoe UI", "Microsoft YaHei UI", "Microsoft YaHei", system-ui, sans-serif;
+			}
+
+			button,
+			textarea {
+				font: inherit;
+			}
+
+			.shell {
+				display: flex;
+				height: 100vh;
+				min-height: 420px;
+				flex-direction: column;
+				border-top: 3px solid var(--word-blue);
+			}
+
+			.header {
+				padding: 14px 16px 12px;
+				border-bottom: 1px solid var(--line);
+				background: linear-gradient(180deg, #ffffff 0%, #fbfcff 100%);
+			}
+
+			.app-mark {
+				display: flex;
+				align-items: center;
+				gap: 10px;
+				min-width: 0;
+			}
+
+			.logo {
+				display: grid;
+				width: 32px;
+				height: 32px;
+				flex: 0 0 auto;
+				place-items: center;
+				border-radius: 6px;
+				background: var(--word-blue);
+				color: #fff;
+				font-size: 16px;
+				font-weight: 700;
+			}
+
+			.title {
+				margin: 0;
+				overflow-wrap: anywhere;
+				font-size: 15px;
+				font-weight: 650;
+				letter-spacing: 0;
+			}
+
+			.title-row {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+				justify-content: space-between;
+				min-width: 0;
+			}
+
+			.header-status {
+				flex: 0 0 auto;
+				padding: 2px 7px;
+				border: 1px solid #c7d8f5;
+				border-radius: 999px;
+				background: var(--word-blue-soft);
+				color: var(--word-blue-strong);
+				font-size: 11px;
+				font-weight: 650;
+				white-space: nowrap;
+			}
+
+			.subtitle {
+				margin: 2px 0 0;
+				color: var(--muted);
+				font-size: 12px;
+			}
+
+			.content {
+				display: flex;
+				min-height: 0;
+				flex: 1;
+				flex-direction: column;
+				gap: 10px;
+				padding: 12px;
+			}
+
+			.chat-panel {
+				display: flex;
+				min-height: 0;
+				flex: 1;
+				flex-direction: column;
+				overflow: hidden;
+				border: 1px solid var(--line);
+				border-radius: 8px;
+				background: var(--panel);
+				box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04);
+			}
+
+			.chat-header {
+				display: flex;
+				align-items: flex-start;
+				justify-content: space-between;
+				gap: 8px;
+				padding: 10px 12px;
+				border-bottom: 1px solid #eeeeee;
+			}
+
+			.chat-header-main {
+				display: flex;
+				min-width: 0;
+				flex: 1;
+				flex-direction: column;
+				gap: 2px;
+			}
+
+			.chat-header-actions {
+				display: flex;
+				align-items: center;
+				gap: 8px;
+			}
+
+			.chat-title {
+				font-size: 13px;
+				font-weight: 650;
+			}
+
+			.chat-state {
+				color: var(--muted);
+				font-size: 11px;
+			}
+
+			.confirmation-banner {
+				display: none;
+				padding: 8px 10px;
+				border-bottom: 1px solid #fde7a2;
+				background: #fff8dc;
+				color: #5c4a17;
+				font-size: 12px;
+			}
+
+			.confirmation-banner.visible {
+				display: block;
+			}
+
+			.messages {
+				display: flex;
+				min-height: 0;
+				flex: 1;
+				flex-direction: column;
+				gap: 8px;
+				overflow-y: auto;
+				padding: 12px;
+				background: #fbfbfb;
+			}
+
+			.empty {
+				margin: auto 0;
+				color: var(--muted);
+				font-size: 12px;
+				text-align: center;
+			}
+
+			.message {
+				max-width: 92%;
+				padding: 8px 10px;
+				border-radius: 8px;
+				overflow-wrap: anywhere;
+				font-size: 12px;
+			}
+
+			.message > :first-child {
+				margin-top: 0;
+			}
+
+			.message > :last-child {
+				margin-bottom: 0;
+			}
+
+			.message p,
+			.message ul,
+			.message ol,
+			.message pre,
+			.message blockquote,
+			.message table {
+				margin: 0 0 8px;
+			}
+
+			.message code {
+				padding: 1px 4px;
+				border-radius: 4px;
+				background: rgba(15, 76, 159, 0.08);
+				font-family: Consolas, "Cascadia Code", monospace;
+				font-size: 11px;
+			}
+
+			.message pre {
+				overflow-x: auto;
+				padding: 8px;
+				border-radius: 6px;
+				background: rgba(15, 76, 159, 0.08);
+			}
+
+			.message pre code {
+				padding: 0;
+				background: transparent;
+			}
+
+			.message blockquote {
+				padding-left: 8px;
+				border-left: 3px solid #c7d8f5;
+				color: var(--muted);
+			}
+
+			.message a {
+				color: inherit;
+			}
+
+			.message.user {
+				align-self: flex-end;
+				background: var(--word-blue);
+				color: #fff;
+			}
+
+			.message.assistant {
+				align-self: flex-start;
+				border: 1px solid #e5e5e5;
+				background: #fff;
+				color: var(--text);
+			}
+
+			.message.system {
+				align-self: center;
+				background: #f0f0f0;
+				color: var(--muted);
+			}
+
+			.composer {
+				display: grid;
+				gap: 8px;
+				padding: 10px;
+				border-top: 1px solid #eeeeee;
+				background: #fff;
+			}
+
+			.composer textarea {
+				width: 100%;
+				min-height: 54px;
+				max-height: 120px;
+				resize: vertical;
+				border: 1px solid var(--line);
+				border-radius: 6px;
+				padding: 8px;
+				color: var(--text);
+				outline: none;
+			}
+
+			.composer textarea:focus {
+				border-color: var(--word-blue);
+				box-shadow: 0 0 0 1px var(--word-blue);
+			}
+
+			.composer-actions {
+				display: flex;
+				align-items: center;
+				justify-content: space-between;
+				gap: 8px;
+			}
+
+			.hint {
+				color: var(--muted);
+				font-size: 11px;
+			}
+
+			.action-buttons {
+				display: flex;
+				gap: 6px;
+			}
+
+			.btn {
+				min-height: 28px;
+				border: 1px solid var(--line);
+				border-radius: 6px;
+				padding: 4px 10px;
+				background: #fff;
+				color: var(--text);
+				cursor: pointer;
+			}
+
+			.btn.primary {
+				border-color: var(--word-blue);
+				background: var(--word-blue);
+				color: #fff;
+			}
+
+			.btn:disabled {
+				cursor: default;
+				opacity: 0.55;
+			}
+		</style>
+	</head>
+	<body>
+		<main class="shell">
+			<header class="header">
+				<div class="app-mark">
+					<div class="logo" aria-hidden="true">W</div>
+					<div>
+						<div class="title-row">
+							<h1 class="title">桌面助手</h1>
+							<span id="status-label" class="header-status">正在连接</span>
+						</div>
+						<p class="subtitle">Word 实时协同</p>
+					</div>
+				</div>
+			</header>
+
+			<section class="content" aria-label="桌面助手 Word 侧边栏">
+				<section class="chat-panel" aria-label="AI 聊天">
+					<div class="chat-header">
+						<div class="chat-header-main">
+							<span class="chat-title">与助手交流</span>
+							<span id="chat-state" class="chat-state">未连接</span>
+						</div>
+						<div class="chat-header-actions">
+							<button id="new-chat-button" class="btn" type="button">新建会话</button>
+						</div>
+					</div>
+					<div id="confirmation-banner" class="confirmation-banner">需要回到桌面助手主窗口处理确认。</div>
+					<div id="messages" class="messages">
+						<p class="empty">连接后可直接在这里向助手发送消息。</p>
+					</div>
+					<form id="composer" class="composer">
+						<textarea id="chat-input" placeholder="例如：把当前标题改得更正式一些" rows="3"></textarea>
+						<div class="composer-actions">
+							<span class="hint">Enter 发送，Shift+Enter 换行</span>
+							<div class="action-buttons">
+								<button id="abort-button" class="btn" type="button" disabled>停止</button>
+								<button id="send-button" class="btn primary" type="submit" disabled>发送</button>
+							</div>
+						</div>
+					</form>
+				</section>
+			</section>
+		</main>
+	</body>
+</html>

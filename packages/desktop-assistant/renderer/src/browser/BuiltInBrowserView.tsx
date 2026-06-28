@@ -154,7 +154,7 @@ export function BuiltInBrowserView() {
 						type="button"
 						title="关闭"
 						aria-label="关闭"
-						onClick={() => window.desktopAssistant.closeWindow()}
+						onClick={() => void window.desktopAssistant.builtInBrowserCloseWindow()}
 					>
 						<X size={14} />
 					</button>

@@ -1,5 +1,23 @@
-import { BellRing, Brain, Check, ChevronDown, ChevronUp, FileText, Loader2, Mic, Send, Sparkles, Square, Volume2, X } from "lucide-react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+	BellRing,
+	Brain,
+	Check,
+	CheckCheck,
+	ChevronDown,
+	ChevronUp,
+	FileText,
+	Loader2,
+	Mic,
+	Pencil,
+	Send,
+	Sparkles,
+	Square,
+	Trash2,
+	Volume2,
+	X,
+	Zap,
+} from "lucide-react";
+import { lazy, memo, Suspense, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
 	DesktopAssistantSnapshot,
 	PendingConfirmation,
@@ -21,6 +39,12 @@ import {
 	LiveAssistantResponse,
 	TimelineStrip as SharedTimelineStrip,
 } from "./ConversationDisplay.tsx";
+import { FlowchartProgressPanel } from "./FlowchartProgressPanel.tsx";
+
+// Lazy so ReactFlow / @xyflow only loads when the 灵动窗 (with its flow facet) is shown.
+const DynamicWindow = lazy(() =>
+	import("./DynamicWindow.tsx").then((module) => ({ default: module.DynamicWindow })),
+);
 
 function formatContextUsage(snapshot: DesktopAssistantSnapshot): string | undefined {
 	const usage = snapshot.contextUsage;
@@ -226,6 +250,10 @@ export function ChatView({
 	onRemoveAttachment,
 	onToggleConversationThinking,
 	onSend,
+	onSteer,
+	onSteerPreInput,
+	onDeletePreInput,
+	onWithdrawPreInput,
 	onStartVoice,
 	onAbort,
 	onMenu,
@@ -251,6 +279,10 @@ export function ChatView({
 	onRemoveAttachment: (id: string) => void;
 	onToggleConversationThinking: (enabled: boolean) => Promise<DesktopAssistantSnapshot | undefined> | void;
 	onSend: () => void;
+	onSteer: () => void;
+	onSteerPreInput: (id: string) => void;
+	onDeletePreInput: (id: string) => void;
+	onWithdrawPreInput: (id: string) => void;
 	onStartVoice: () => void;
 	onAbort: () => void;
 	onMenu: () => void;
@@ -277,6 +309,24 @@ export function ChatView({
 	const previousIsAnsweringRef = useRef(snapshot.isRunning || loadingHistory);
 	const [threadScrollState, setThreadScrollState] = useState({ scrollTop: 0, viewportHeight: 0, version: 0 });
 	const [memoBannerDismissed, setMemoBannerDismissed] = useState(false);
+	const [dynamicDocked, setDynamicDocked] = useState<boolean>(() => {
+		try {
+			return localStorage.getItem("dynamicWindow.docked") === "1";
+		} catch {
+			return false;
+		}
+	});
+	const toggleDynamicDocked = useCallback(() => {
+		setDynamicDocked((value) => {
+			const next = !value;
+			try {
+				localStorage.setItem("dynamicWindow.docked", next ? "1" : "0");
+			} catch {
+				// best-effort persistence
+			}
+			return next;
+		});
+	}, []);
 
 	// 输入框随内容自然增高，最多 6 行；第 7 行起停止增高并显示滚动条。
 	useLayoutEffect(() => {
@@ -313,11 +363,26 @@ export function ChatView({
 		});
 	}, []);
 
-	const displayItems = useMemo(
-		() => (loadingHistory ? [] : buildDisplayItems(snapshot.messages, snapshot.timeline)),
-		[loadingHistory, snapshot.messages, snapshot.timeline],
+	const displayItems = useMemo(() => {
+		if (loadingHistory) return [];
+		// When history is paginated, exclude applied steering entries whose order
+		// falls before the oldest loaded message so they don't appear in an empty gap.
+		const oldestOrder = snapshot.historyWindow?.oldestOrder;
+		const visibleSteering =
+			oldestOrder !== undefined
+				? (snapshot.steeringLog ?? []).filter((e) => e.order === undefined || e.order >= oldestOrder)
+				: snapshot.steeringLog;
+		return buildDisplayItems(snapshot.messages, snapshot.timeline, visibleSteering);
+	}, [loadingHistory, snapshot.messages, snapshot.timeline, snapshot.steeringLog, snapshot.historyWindow?.oldestOrder]);
+	// Automation conversations carry a single `flowchart` timeline item we pin to the
+	// top of the thread (it is excluded from buildDisplayItems, so it never appears
+	// inline) — the flow progress stays visible while tool rows scroll beneath it.
+	const flowItem = useMemo(
+		() => (loadingHistory ? undefined : snapshot.timeline.find((item) => item.kind === "flowchart" && item.flowGraph)),
+		[loadingHistory, snapshot.timeline],
 	);
 	const hasMessages = snapshot.messages.length > 0;
+	const hasDynamicWindow = Boolean(snapshot.liveFlow || snapshot.dynamicWindow);
 
 	const updateThreadScrollState = (el: HTMLDivElement) => {
 		setThreadScrollState((current) => {
@@ -460,7 +525,11 @@ export function ChatView({
 		previousStreamingThinkingRef.current = snapshot.streamingThinking;
 		previousIsAnsweringRef.current = isAnswering;
 	}, [isAnswering, snapshot.streamingText, snapshot.streamingThinking]);
-	const canSend = prompt.trim().length > 0 || attachments.length > 0;
+	const hasTypedPrompt = prompt.trim().length > 0;
+	const canSend = hasTypedPrompt || (!isAnswering && attachments.length > 0);
+	const isStopSubmit = isAnswering && !hasTypedPrompt;
+	const canSendWhileRunning = isAnswering && hasTypedPrompt && attachments.length === 0;
+	const sendDisabled = loadingHistory || (!isStopSubmit && (!canSend || (isAnswering && !canSendWhileRunning)));
 	const conversationThinking = snapshot.conversationThinking;
 	const thinkingSupported = conversationThinking.supported;
 	const voiceTone = voiceToneOf(snapshot.voiceOverlay.state);
@@ -475,7 +544,7 @@ export function ChatView({
 					: "";
 
 	return (
-		<div className="screen chat-screen">
+		<div className={`screen chat-screen${dynamicDocked && hasDynamicWindow ? " dynamic-docked" : ""}`}>
 			<TitleBar
 				onMenu={onMenu}
 				title="Pi 桌面助手"
@@ -547,6 +616,8 @@ export function ChatView({
 					</div>
 				) : null}
 
+				{flowItem?.flowGraph ? <FlowchartProgressPanel data={flowItem.flowGraph} /> : null}
+
 				{displayItems.length > 0 ? (
 					<MemoVirtualChatList
 						items={displayItems}
@@ -570,6 +641,68 @@ export function ChatView({
 					onToggleLiveThinking={() => setLiveThinkingExpanded((current) => !current)}
 				/>
 
+				{snapshot.queuedPreInputs.length > 0 ? (
+					<section className="queued-preinputs" aria-label="预输入队列">
+						{snapshot.queuedPreInputs.map((item, index) => (
+							<div className="queued-preinput-card" key={item.id}>
+								<div className="queued-preinput-head">
+									<span>{index === 0 ? "预输入 · 下一条" : `预输入 · #${index + 1}`}</span>
+									<div className="queued-preinput-actions">
+										<button
+											type="button"
+											onClick={() => onWithdrawPreInput(item.id)}
+											aria-label="修改预输入"
+											title="修改预输入"
+										>
+											<Pencil size={13} />
+										</button>
+										<button
+											type="button"
+											className="preinput-steer-btn"
+											onClick={() => onSteerPreInput(item.id)}
+											aria-label="转为引导"
+											title="转为引导（在下一安全点插入）"
+										>
+											<Zap size={13} />
+										</button>
+										<button
+											type="button"
+											onClick={() => onDeletePreInput(item.id)}
+											aria-label="删除预输入"
+											title="删除预输入"
+										>
+											<Trash2 size={13} />
+										</button>
+									</div>
+								</div>
+								<p>{item.text}</p>
+							</div>
+						))}
+					</section>
+				) : null}
+
+				{(snapshot.steeringLog ?? []).some((e) => e.status === "pending") ? (
+					<div className="steering-log" aria-label="引导历史">
+						{(snapshot.steeringLog ?? [])
+							.filter((entry) => entry.status === "pending")
+							.map((entry) => (
+								<div key={entry.id} className="steering-bubble-row pending">
+									<div className="steering-bubble">
+										<div className="steering-bubble-meta">
+											<Zap size={11} />
+											<span>引导</span>
+										</div>
+										<p>{entry.text}</p>
+										<div className="steering-pending-label">
+											<Loader2 size={10} className="spin" />
+											<span>等待安全点</span>
+										</div>
+									</div>
+								</div>
+							))}
+					</div>
+				) : null}
+
 				<SharedTimelineStrip items={snapshot.timeline} />
 				{contextUsageText ? <div className="context-usage-footer">{contextUsageText}</div> : null}
 			</div>
@@ -584,9 +717,9 @@ export function ChatView({
 				className={`composer${voiceComposerClass}`}
 				onSubmit={(event) => {
 					event.preventDefault();
-					if (isAnswering) {
+					if (isStopSubmit) {
 						onAbort();
-					} else {
+					} else if (!sendDisabled) {
 						onSend();
 					}
 				}}
@@ -642,7 +775,9 @@ export function ChatView({
 					}}
 					placeholder={
 						isAnswering
-							? "正在回答中…按 Esc 或点击停止以中断"
+							? hasTypedPrompt
+								? "Enter 预输入，点击引导在下一安全点插入"
+								: "正在回答中，输入内容可创建预输入..."
 							: snapshot.authStatus.configured
 								? "向 Pi 提问或下达任务..."
 								: "请先在设置中配置 API Key"
@@ -656,7 +791,7 @@ export function ChatView({
 						}
 						if (event.key === "Enter" && !event.shiftKey) {
 							event.preventDefault();
-							if (!isAnswering && canSend) onSend();
+							if (!sendDisabled && !isStopSubmit) onSend();
 						}
 					}}
 				/>
@@ -697,19 +832,44 @@ export function ChatView({
 						<Brain size={13} />
 						<span>{conversationThinking.enabled ? "深度思考开" : "深度思考关"}</span>
 					</button>
-					<button
+					<div className="composer-actions">
+						{isAnswering && hasTypedPrompt ? (
+							<button
+								type="button"
+								className="steer-btn"
+								disabled={loadingHistory || attachments.length > 0}
+								onClick={onSteer}
+								aria-label="引导"
+								title={attachments.length > 0 ? "附件暂不支持引导" : "在下一安全点插入引导"}
+							>
+								<Zap size={13} />
+								<span>引导</span>
+							</button>
+						) : null}
+						<button
 						type="submit"
-						className={`send-btn ${isAnswering ? "stop" : ""}`}
-						disabled={loadingHistory || (!isAnswering && !canSend)}
-						aria-label={isAnswering ? "停止" : "发送"}
-						title={isAnswering ? "停止当前回答（Esc）" : "发送"}
+						className={`send-btn ${isStopSubmit ? "stop" : ""}`}
+						disabled={sendDisabled}
+						aria-label={isStopSubmit ? "停止" : "发送"}
+						title={isStopSubmit ? "停止当前回答（Esc）" : isAnswering ? "加入预输入队列" : "发送"}
 					>
-						{isAnswering ? <Square size={14} fill="currentColor" /> : <Send size={15} />}
-					</button>
+						{isStopSubmit ? <Square size={14} fill="currentColor" /> : <Send size={15} />}
+						</button>
+					</div>
 				</div>
 			</form>
 			{petConfig.enabled && petLayerActive ? (
 				<PetLayer config={petConfig} engineRef={petEngineRef} messageCount={snapshot.messages.length} />
+			) : null}
+			{hasDynamicWindow ? (
+				<Suspense fallback={null}>
+					<DynamicWindow
+						liveFlow={snapshot.liveFlow}
+						dynamicWindow={snapshot.dynamicWindow}
+						docked={dynamicDocked}
+						onToggleDocked={toggleDynamicDocked}
+					/>
+				</Suspense>
 			) : null}
 		</div>
 	);

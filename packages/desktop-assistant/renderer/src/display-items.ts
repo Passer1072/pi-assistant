@@ -1,13 +1,18 @@
-import type { ChatMessageView, TimelineItem } from "../../src/shared/types.ts";
+import type { ChatMessageView, SteeringLogEntry, TimelineItem } from "../../src/shared/types.ts";
 
 export type DisplayItem =
 	| { kind: "message"; message: ChatMessageView }
 	| { kind: "thinking"; item: TimelineItem }
 	| { kind: "tool"; item: TimelineItem }
 	| { kind: "artifact"; item: TimelineItem }
-	| { kind: "notice"; item: TimelineItem };
+	| { kind: "notice"; item: TimelineItem }
+	| { kind: "steering"; item: SteeringLogEntry };
 
-export function buildDisplayItems(messages: ChatMessageView[], timeline: TimelineItem[]): DisplayItem[] {
+export function buildDisplayItems(
+	messages: ChatMessageView[],
+	timeline: TimelineItem[],
+	steeringLog?: SteeringLogEntry[],
+): DisplayItem[] {
 	const thinkingItems = timeline.filter((item) => item.kind === "thinking");
 	const toolItems = timeline.filter((item) => item.kind === "tool" || item.kind === "confirmation");
 	const artifactItems = timeline.filter((item) => item.kind === "artifact" && (item.artifacts?.length ?? 0) > 0);
@@ -39,6 +44,18 @@ export function buildDisplayItems(messages: ChatMessageView[], timeline: Timelin
 			item: { kind: "notice" as const, item },
 		})),
 	];
+	const appliedSteering = (steeringLog ?? []).filter(
+		(entry): entry is SteeringLogEntry & { order: number; appliedAt: number } =>
+			entry.status === "applied" && entry.order !== undefined && entry.appliedAt !== undefined,
+	);
+	all.push(
+		...appliedSteering.map((entry) => ({
+			order: entry.order,
+			ts: entry.appliedAt,
+			item: { kind: "steering" as const, item: entry as SteeringLogEntry },
+		})),
+	);
+
 	all.sort((left, right) => {
 		if (left.order !== right.order) {
 			return left.order - right.order;
@@ -59,5 +76,7 @@ function displayKindRank(kind: DisplayItem["kind"]): number {
 	if (kind === "notice") return 2;
 	if (kind === "tool") return 3;
 	// An artifact card sits right after the tool that produced it on an order tie.
-	return 4;
+	if (kind === "artifact") return 4;
+	// Steering bubble follows the context in which it was injected.
+	return 5;
 }

@@ -49,6 +49,7 @@ import {
 } from "../shared/deepseek-connection.ts";
 import {
 	type AiBrowserPreference,
+	type AiOfficePreference,
 	type ApiKeyValidationStatus,
 	type AppLaunchCacheView,
 	AUTOMATION_PERMISSION_MODES,
@@ -72,6 +73,7 @@ import {
 	type AutomationRunRecord,
 	type AutomationRunRequest,
 	type AutomationRunResponse,
+	type AutomationRunStatus,
 	type AutomationSetEnabledRequest,
 	type AutomationSummary,
 	type AutomationUpdateRequest,
@@ -90,11 +92,14 @@ import {
 	type DesktopAssistantSettings,
 	type DesktopAssistantSnapshot,
 	type DesktopCapabilityId,
+	type ExperimentalSettings,
 	type FlowEdge,
 	type FlowNode,
 	type ForgeExtensionMutationResponse,
 	type GlobalMemoryEntry,
 	type GlobalMemoryListResponse,
+	type HomeWeatherView,
+	type HomeWelcomeState,
 	type InstallSoftwarePluginRequest,
 	type InstallSoftwarePluginResponse,
 	type ListForgeExtensionsResponse,
@@ -108,24 +113,40 @@ import {
 	type McpServerListResponse,
 	type McpServerStatus,
 	type McpServerUpsertRequest,
+	type MemoAttachment,
+	type MemoAttachmentAddRequest,
+	type MemoAttachmentRemoveRequest,
+	type MemoBatchRequest,
+	type MemoBatchResult,
 	type MemoCompleteRequest,
 	type MemoCreateRequest,
 	type MemoDeleteRequest,
 	type MemoItem,
+	type MemoList,
+	type MemoListCreateRequest,
+	type MemoListDeleteRequest,
+	type MemoListReorderRequest,
 	type MemoListRequest,
 	type MemoListResponse,
+	type MemoListUpdateRequest,
+	type MemoReorderRequest,
 	type MemoSetReminderRequest,
 	type MemoSnoozeRequest,
+	type MemoStatsResult,
 	type MemoSummary,
 	type MemoUpdateRequest,
 	type PendingConfirmation,
 	type PendingPromptAttachment,
+	type PersonalizationSettings,
 	type PersonalSkillArchiveRequest,
 	type PersonalSkillFileView,
 	type PersonalSkillListResponse,
 	type PersonalSkillReadRequest,
 	type PersonalSkillSaveRequest,
 	type PersonalSkillSearchRequest,
+	type PromptDelivery,
+	type QueuedPreInputRequest,
+	type RefreshHomeWelcomeRequest,
 	type SandboxCleanRequest,
 	type SandboxCleanResponse,
 	type SandboxSettings,
@@ -144,8 +165,15 @@ import {
 	type UninstallSoftwarePluginResponse,
 	type ValidateSoftwarePluginTargetRequest,
 	type VoiceOverlayState,
+	type WithdrawQueuedPreInputResponse,
 } from "../shared/types.ts";
 import { VOICE_STT_AUTH_PROVIDER } from "../voice/stt-client.ts";
+import { APP_BRIDGE_TOOL_NAMES, createAppBridgeToolDefinitions, type ExternalAppToolHost } from "./app-bridge-tools.ts";
+import {
+	AUTOMATION_BRIDGE_TOOL_NAMES,
+	type AutomationBridgeToolHost,
+	createAutomationBridgeToolDefinitions,
+} from "./automation-bridge-tools.ts";
 import { AutomationDraftSession } from "./automation-draft-session.ts";
 import { AutomationRepositoryService } from "./automation-repository.ts";
 import {
@@ -195,13 +223,32 @@ import {
 	syncDeepSeekRuntimeAuth,
 	validateDeepSeekApiKey,
 } from "./deepseek.ts";
+import { createEbookToolDefinitions, EBOOK_TOOL_NAMES } from "./ebook-tools.ts";
+import { createEmailToolDefinitions, EMAIL_TOOL_NAMES } from "./email-tools.ts";
+import { buildErrorSelfSummaryAppendPrompt } from "./error-self-summary.ts";
 import { createFlowDesignToolDefinitions, FLOW_DESIGN_TOOL_NAMES } from "./flow-design-tools.ts";
+import {
+	computeHomeWelcomeSignature,
+	generateHomeWelcome,
+	type HomeWelcomeContext,
+	type HomeWelcomeEmailContext,
+	homeWelcomeDateText,
+	homeWelcomeTimeBucket,
+	lookupFixedHoliday,
+	shouldRegenerateHomeWelcome,
+} from "./home-welcome.ts";
+import { fetchWeatherSnapshot, formatWeatherGlance } from "./home-welcome-weather.ts";
+import { LiveFlowSession } from "./live-flow-session.ts";
+import { createLiveFlowToolDefinitions, LIVE_FLOW_TOOL_NAMES } from "./live-flow-tools.ts";
 import { MemoReminderScheduler } from "./memo-reminder-scheduler.ts";
 import { MemoRepositoryService } from "./memo-repository.ts";
 import { createMemoToolDefinitions, MEMO_TOOL_NAMES, type MemoToolHost } from "./memo-tools.ts";
 import { MemoryStore } from "./memory-store.ts";
+import { createMemoryToolDefinitions, MEMORY_TOOL_NAMES, type MemoryToolHost } from "./memory-tools.ts";
+import { buildOfficeRoutingAppendPrompt } from "./office-routing.ts";
 import { PersonalSkillRepositoryService, selectExplicitPersonalSkillId } from "./personal-skill-repository.ts";
 import { createPersonalSkillToolDefinitions, PERSONAL_SKILL_TOOL_NAMES } from "./personal-skill-tools.ts";
+import { createSessionToolDefinitions, SESSION_TOOL_NAMES, type SessionToolHost } from "./session-tools.ts";
 
 // Per-conversation prompt/history helpers now live in conversation-context.ts.
 // Re-exported here so existing importers (tests, tooling) keep working.
@@ -237,6 +284,8 @@ export interface DesktopAgentServiceOptions {
 	sandboxPaths?: Partial<SandboxPathContext>;
 	/** Directory for the memo/to-do JSON store (main passes userData/memos). Defaults to agentDir/memos. */
 	memoDir?: string;
+	/** Directory for memo attachment copies. Defaults to agentDir/memo-attachments. */
+	memoAttachmentsDir?: string;
 	/** Directory for the automation JSON store (main passes userData/automations). Defaults to agentDir/automations. */
 	automationDir?: string;
 	openFlowEditorWindow?: (flowId?: string) => Promise<void>;
@@ -262,6 +311,9 @@ const DESKTOP_SKILL_DIRECTORY_BY_CAPABILITY = {
 const OFFICE_MCP_TOOL_GATES: ReadonlyArray<{ prefix: string; capability: DesktopCapabilityId }> = [
 	{ prefix: "mcp_xlsx_", capability: "excel" },
 	{ prefix: "mcp_pptx_", capability: "ppt" },
+	{ prefix: "mcp_word_", capability: "document" },
+	{ prefix: "mcp_xlive_", capability: "excel" },
+	{ prefix: "mcp_pptlive_", capability: "ppt" },
 ];
 
 export class DesktopAgentService {
@@ -275,7 +327,12 @@ export class DesktopAgentService {
 	private options: DesktopAgentServiceOptions;
 	private appLaunchCachePath: string;
 	private mcpSettingsPath: string;
+	private browserSettingsPath: string;
+	private experimentalSettingsPath: string;
 	private sandboxSettingsPath: string;
+	private homeWelcomeSettingsPath: string;
+	private personalizationSettingsPath: string;
+	private memorySettingsPath: string;
 	private sandboxManager: SandboxManager;
 	private coordinator: ConversationArchiveCoordinator;
 	private memoryStore: MemoryStore;
@@ -292,6 +349,19 @@ export class DesktopAgentService {
 	private latestSoftwarePluginProgress: SoftwarePluginOperationProgress | undefined;
 	private browserSnapshotStore = new BrowserSnapshotStore();
 	private browserHost: BrowserToolHost | undefined;
+	private activeMemoAutoRuns = new Set<string>();
+	/** Bridge to "更多应用" external apps; set once the controller exists (see main/index.ts). */
+	private externalAppHost: ExternalAppToolHost | undefined;
+	/** Cached AI home greeting; carried on snapshots, refreshed on launch + 30 min. */
+	private homeWelcome: HomeWelcomeState | undefined;
+	/** Guards against concurrent welcome generations (e.g. launch + interval racing). */
+	private homeWelcomeGenerating = false;
+	/** Best-effort weather snapshot cache (~2h TTL) so a static home never re-hits net. */
+	private homeWelcomeWeatherCache: { value: HomeWeatherView | undefined; fetchedAt: number } | undefined;
+	/** Resolved personalization location (manual value or auto-detected city); invalidated on settings change. */
+	private userLocationCache: { value: string | undefined } | undefined;
+	/** Best-effort email unread glance cache (~20min TTL); only read when app running. */
+	private homeWelcomeEmailCache: { value: HomeWelcomeEmailContext | undefined; fetchedAt: number } | undefined;
 	/**
 	 * All live conversations, keyed by a stable internal id (NOT the sessionId,
 	 * which can change on a mid-session fork). Each context owns its own session,
@@ -322,6 +392,7 @@ export class DesktopAgentService {
 		const placeholder = new ConversationContext(
 			this.buildContextDeps(),
 			SessionManager.create(this.options.cwd, this.coordinator.paths.sessionsDir),
+			this.buildLiveFlowContextOptions(),
 		);
 		this.registerContext(placeholder, { focus: true });
 		return placeholder;
@@ -331,14 +402,25 @@ export class DesktopAgentService {
 		this.options = options;
 		this.browserHost = options.browserHost;
 		this.mcpSettingsPath = join(options.agentDir, "mcp-settings.json");
+		this.browserSettingsPath = join(options.agentDir, "browser-settings.json");
+		this.experimentalSettingsPath = join(options.agentDir, "experimental-settings.json");
 		this.sandboxSettingsPath = join(options.agentDir, "sandbox.json");
+		this.homeWelcomeSettingsPath = join(options.agentDir, "home-welcome-settings.json");
+		this.personalizationSettingsPath = join(options.agentDir, "personalization-settings.json");
+		this.memorySettingsPath = join(options.agentDir, "memory-settings.json");
 		const initialSettings = normalizeSettings(options.settings);
 		this.settings = normalizeSettings({
 			...initialSettings,
+			browser: readPersistedBrowserSettings(this.browserSettingsPath) ?? initialSettings.browser,
+			experimental: readPersistedExperimentalSettings(this.experimentalSettingsPath) ?? initialSettings.experimental,
 			mcp: seedDefaultMcpServers(readPersistedMcpSettings(this.mcpSettingsPath) ?? initialSettings.mcp),
 			// Sandbox policy must be trustworthy from startup, so it is persisted in the
 			// main process (like MCP) and loaded here rather than pushed from the renderer.
 			sandbox: readPersistedSandbox(this.sandboxSettingsPath) ?? initialSettings.sandbox,
+			homeWelcome: readPersistedHomeWelcomeSettings(this.homeWelcomeSettingsPath) ?? initialSettings.homeWelcome,
+			personalization:
+				readPersistedPersonalizationSettings(this.personalizationSettingsPath) ?? initialSettings.personalization,
+			memory: readPersistedMemorySettings(this.memorySettingsPath) ?? initialSettings.memory,
 		});
 		this.authStorage = AuthStorage.create(join(options.agentDir, "auth.json"));
 		this.modelRegistry = ModelRegistry.create(this.authStorage, join(options.agentDir, "models.json"));
@@ -365,7 +447,10 @@ export class DesktopAgentService {
 			onStatus: (status) => this.emit({ type: "sandbox_status", sandboxStatus: status }),
 		});
 		this.memoryStore = new MemoryStore(options.cwd, options.saveDir);
-		this.memoRepository = new MemoRepositoryService(options.memoDir ?? join(options.agentDir, "memos"));
+		this.memoRepository = new MemoRepositoryService(
+			options.memoDir ?? join(options.agentDir, "memos"),
+			options.memoAttachmentsDir ?? join(options.agentDir, "memo-attachments"),
+		);
 		this.memoReminderScheduler = new MemoReminderScheduler((memoId, missed) => this.onMemoReminder(memoId, missed));
 		this.automationRepository = new AutomationRepositoryService(
 			options.automationDir ?? join(options.agentDir, "automations"),
@@ -382,6 +467,15 @@ export class DesktopAgentService {
 			emitChanged: (flowId) => this.emitAutomationChanged(flowId),
 			emitProgress: (flowId, runId, message) =>
 				this.emitAutomationProgress({ flowId, runId, kind: "log", message, timestamp: new Date().toISOString() }),
+			emitFinish: (flowId, runId, status, summary) =>
+				this.emitAutomationProgress({
+					flowId,
+					runId,
+					kind: "finish",
+					status,
+					summary,
+					timestamp: new Date().toISOString(),
+				}),
 			createBackgroundConversation: (flow, run) => this.createAutomationConversation(flow, run),
 		});
 		this.personalSkillRepository = new PersonalSkillRepositoryService(options.cwd);
@@ -409,12 +503,19 @@ export class DesktopAgentService {
 		const initial = new ConversationContext(
 			this.buildContextDeps(),
 			SessionManager.create(options.cwd, this.coordinator.paths.sessionsDir),
+			this.buildLiveFlowContextOptions(),
 		);
 		this.registerContext(initial, { focus: true });
 	}
 
 	setBrowserHost(browserHost: BrowserToolHost): void {
 		this.browserHost = browserHost;
+		this.refreshAllTools();
+	}
+
+	/** Wire the "更多应用" bridge so app_call / email_* tools become available. */
+	setExternalAppHost(host: ExternalAppToolHost): void {
+		this.externalAppHost = host;
 		this.refreshAllTools();
 	}
 
@@ -491,6 +592,7 @@ export class DesktopAgentService {
 		const next = new ConversationContext(
 			this.buildContextDeps(),
 			SessionManager.create(this.options.cwd, this.coordinator.paths.sessionsDir),
+			this.buildLiveFlowContextOptions(),
 		);
 		this.registerContext(next, { focus: true });
 		await next.initializeRuntime({
@@ -661,6 +763,22 @@ export class DesktopAgentService {
 		return this.aiBrowserControlActive() && this.settings.browser.aiBrowserPreference === "built_in";
 	}
 
+	private officePref(): AiOfficePreference {
+		return this.settings.office.aiOfficePreference;
+	}
+
+	private isLiveOfficeTool(name: string): boolean {
+		return /^mcp_(word|xlive|pptlive)_/.test(name);
+	}
+
+	private isFileOfficeTool(name: string): boolean {
+		return /^mcp_(xlsx|pptx)_/.test(name);
+	}
+
+	private hasLiveOfficePluginEnabled(): boolean {
+		return this.activeMcpToolNames().some((name) => this.isLiveOfficeTool(name));
+	}
+
 	/** True unless this MCP tool is gated off (disabled Office capability, or a superseded browser MCP). */
 	private isMcpToolEnabled(name: string): boolean {
 		// With the "built_in" browser preference, suppress any external browser-control MCP (mcp_browser_*):
@@ -669,6 +787,8 @@ export class DesktopAgentService {
 		if (this.externalBrowserMcpSuppressed() && isExternalBrowserControlToolName(name)) {
 			return false;
 		}
+		if (this.officePref() === "live" && this.isFileOfficeTool(name)) return false;
+		if (this.officePref() === "file" && this.isLiveOfficeTool(name)) return false;
 		for (const gate of OFFICE_MCP_TOOL_GATES) {
 			if (name.startsWith(gate.prefix) && !this.settings.capabilities[gate.capability].enabled) {
 				return false;
@@ -709,6 +829,9 @@ export class DesktopAgentService {
 			getSourceSessionId: () => this.context.session?.sessionId,
 		});
 		const memoTools = createMemoToolDefinitions(this.memoHost());
+		const memoryTools = this.settings.memory.enabled ? createMemoryToolDefinitions(this.memoryHost()) : [];
+		const automationTools = createAutomationBridgeToolDefinitions(this.automationBridgeHost());
+		const sessionTools = createSessionToolDefinitions(this.sessionHost());
 		const ws = this.settings.webSearch;
 		const webTools = createWebTools({
 			mode: ws?.mode ?? "auto",
@@ -717,9 +840,17 @@ export class DesktopAgentService {
 			googleCx: ws?.googleCx,
 			searxngUrl: ws?.searxngUrl,
 			network: this.settings.sandbox.enabled ? this.settings.sandbox.network : undefined,
+			fetchImpl: globalThis.fetch,
 		});
 		const browserTools =
 			this.builtInBrowserToolsActive() && this.browserHost ? createBrowserToolDefinitions(this.browserHost) : [];
+		const externalAppTools = this.externalAppHost
+			? [
+					...createAppBridgeToolDefinitions(this.externalAppHost),
+					...createEmailToolDefinitions(this.externalAppHost),
+					...createEbookToolDefinitions(this.externalAppHost),
+				]
+			: [];
 		return [
 			...mcpTools,
 			...tokenSavingTools,
@@ -728,6 +859,10 @@ export class DesktopAgentService {
 			...personalSkillTools,
 			...webTools,
 			...memoTools,
+			...memoryTools,
+			...automationTools,
+			...sessionTools,
+			...externalAppTools,
 		];
 	}
 
@@ -739,8 +874,37 @@ export class DesktopAgentService {
 			...getActiveDesktopToolNames(this.settings.capabilities),
 			...PERSONAL_SKILL_TOOL_NAMES,
 			...MEMO_TOOL_NAMES,
+			...(this.settings.memory.enabled ? [...MEMORY_TOOL_NAMES] : []),
+			...AUTOMATION_BRIDGE_TOOL_NAMES,
+			...SESSION_TOOL_NAMES,
 			...(this.settings.webSearch?.mode !== "off" ? WEB_TOOL_NAMES : []),
+			...(this.externalAppHost ? [...APP_BRIDGE_TOOL_NAMES, ...EMAIL_TOOL_NAMES, ...EBOOK_TOOL_NAMES] : []),
 		];
+	}
+
+	/**
+	 * When the "实时流程化" experiment is on, build a per-conversation {@link LiveFlowSession}
+	 * plus the profile that adds the flow_plan/flow_step/flow_finish tools + guidance prompt
+	 * to a NORMAL chat. `kind` is intentionally left undefined so the conversation stays a
+	 * standard, listable user session (see {@link isStandardContext}). Off → returns `{}` so
+	 * normal chats are untouched.
+	 */
+	private buildLiveFlowContextOptions(): {
+		profile?: ConversationRuntimeProfile;
+		liveFlowSession?: LiveFlowSession;
+	} {
+		if (!this.settings.experimental.liveFlow.enabled) return {};
+		const liveFlowSession = new LiveFlowSession();
+		// Append (not replace) so the base tool set is built fresh at runtime-init and
+		// stays current with host/capability changes; the live-flow tools only depend on
+		// the in-memory session, so building them up front is safe.
+		const profile: ConversationRuntimeProfile = {
+			extraTools: createLiveFlowToolDefinitions(liveFlowSession),
+			extraToolNames: [...LIVE_FLOW_TOOL_NAMES],
+			appendSystemPrompt: [buildLiveFlowAppendPrompt()],
+			agentSource: "interactive",
+		};
+		return { profile, liveFlowSession };
 	}
 
 	/**
@@ -774,6 +938,11 @@ export class DesktopAgentService {
 			const profile = runtimeOptions.profile;
 			const model = await configureDeepSeekDefaults(this.modelRegistry, this.authStorage, this.settings);
 			const skillFiles = resolveDesktopSkillFiles(cwd);
+			// Personalization is resolved once per session (location lookup is async) and cached
+			// into the system prompt — changes apply to newly created conversations.
+			const personalizationPrompt = this.settings.personalization.enabled
+				? buildPersonalizationAppendPrompt(this.settings.personalization, await this.resolveUserLocation())
+				: undefined;
 			const services = await createAgentSessionServices({
 				cwd,
 				agentDir,
@@ -783,8 +952,10 @@ export class DesktopAgentService {
 				resourceLoaderOptions: {
 					additionalSkillPaths: DESKTOP_CAPABILITY_IDS.map((id) => dirname(skillFiles[id])),
 					appendSystemPrompt: [
+						...(personalizationPrompt ? [personalizationPrompt] : []),
 						...(this.settings.mcp.enabled ? [buildMcpAppendPrompt(this.activeMcpToolNames())] : []),
 						...(this.settings.tokenSaving.enabled ? [buildTokenSavingAppendPrompt()] : []),
+						buildLongRunningTasksAppendPrompt(),
 						...(this.settings.browser.allowAiControl
 							? [
 									buildBrowserRoutingAppendPrompt(
@@ -793,13 +964,23 @@ export class DesktopAgentService {
 									),
 								]
 							: []),
+						...(this.hasLiveOfficePluginEnabled()
+							? [buildOfficeRoutingAppendPrompt(this.settings.office.aiOfficePreference)]
+							: []),
 						buildSystemOperationAppendPrompt(skillFiles.system, this.settings.sandbox.enabled),
+						...(this.settings.experimental.errorSelfSummary.enabled ? [buildErrorSelfSummaryAppendPrompt()] : []),
 						...(profile?.appendSystemPrompt ?? []),
 					],
 				},
 			});
-			const activeToolNames = profile?.activeToolNames ?? this.createActiveToolNames();
-			const customTools = profile?.customTools ?? this.createCustomTools();
+			const baseToolNames = profile?.activeToolNames ?? this.createActiveToolNames();
+			const activeToolNames = profile?.extraToolNames?.length
+				? [...baseToolNames, ...profile.extraToolNames]
+				: baseToolNames;
+			const baseCustomTools = profile?.customTools ?? this.createCustomTools();
+			const customTools = profile?.extraTools?.length
+				? [...baseCustomTools, ...profile.extraTools]
+				: baseCustomTools;
 			const result = await createAgentSessionFromServices({
 				services,
 				sessionManager,
@@ -873,12 +1054,23 @@ export class DesktopAgentService {
 		source: "text" | "voice" = "text",
 		attachments: PendingPromptAttachment[] = [],
 		sessionId?: string,
+		delivery: PromptDelivery = "prompt",
 	): Promise<void> {
 		const target = this.contextFor(sessionId);
 		if (!target.session) {
 			await this.initialize();
 		}
-		await target.prompt(message, source, attachments);
+		await target.prompt(message, source, attachments, delivery);
+	}
+
+	deleteQueuedPreInput(request: QueuedPreInputRequest): DesktopAssistantSnapshot {
+		this.contextFor(request.sessionId).deleteQueuedPreInput(request.id);
+		return this.snapshot();
+	}
+
+	withdrawQueuedPreInput(request: QueuedPreInputRequest): WithdrawQueuedPreInputResponse {
+		const queuedPreInput = this.contextFor(request.sessionId).withdrawQueuedPreInput(request.id);
+		return { queuedPreInput, snapshot: this.snapshot() };
 	}
 
 	/**
@@ -985,6 +1177,7 @@ export class DesktopAgentService {
 					reason: "resume",
 					previousSessionFile,
 				},
+				...this.buildLiveFlowContextOptions(),
 			},
 		);
 		this.registerContext(next, { focus: true });
@@ -1022,7 +1215,9 @@ export class DesktopAgentService {
 
 	updateGlobalMemory(
 		id: string,
-		update: Partial<Pick<GlobalMemoryEntry, "kind" | "text" | "confidence" | "tags" | "archived">>,
+		update: Partial<
+			Pick<GlobalMemoryEntry, "kind" | "scope" | "source" | "text" | "confidence" | "reason" | "tags" | "archived">
+		>,
 	): GlobalMemoryEntry | undefined {
 		const updated = this.memoryStore.update(id, update);
 		this.emit({ type: "snapshot", snapshot: this.snapshot() });
@@ -1032,6 +1227,34 @@ export class DesktopAgentService {
 	// ── 备忘录 / 待办 ──────────────────────────────────────────────────────────
 	// All writes go through these methods (IPC handlers and AI tools share them)
 	// so the reminder scheduler and the renderer "memo_changed" feed stay in sync.
+
+	private memoryHost(): MemoryToolHost {
+		return {
+			saveMemory: (request) => {
+				const memory = this.memoryStore.upsert({
+					kind: request.kind,
+					scope: request.scope,
+					source: "explicit",
+					text: request.text,
+					confidence: request.confidence ?? 0.9,
+					reason: request.reason,
+					tags: request.tags,
+					sourceSessionId: this.context.session?.sessionId,
+				});
+				this.emit({ type: "snapshot", snapshot: this.snapshot() });
+				return memory;
+			},
+			searchMemories: (query, limit) =>
+				this.memoryStore
+					.search(query, normalizeMemoryLimit(limit ?? this.settings.memory.maxInjected))
+					.map((result) => result.memory),
+			forgetMemory: (id) => {
+				const deleted = this.memoryStore.delete(id);
+				this.emit({ type: "snapshot", snapshot: this.snapshot() });
+				return deleted;
+			},
+		};
+	}
 
 	/** The subset of this service the memo AI tools drive. */
 	private memoHost(): MemoToolHost {
@@ -1043,7 +1266,38 @@ export class DesktopAgentService {
 			setMemoReminder: (request) => this.setMemoReminder(request),
 			listMemos: (request) => this.listMemos(request),
 			searchMemos: (query, limit) => this.memoRepository.search(query, limit),
+			getMemoStats: () => this.getMemoStats(),
+			batchMemos: (request) => this.batchMemos(request),
+			listMemoLists: () => this.listMemoLists(),
+			createMemoList: (request) => this.createMemoList(request),
+			updateMemoList: (request) => this.updateMemoList(request),
+			deleteMemoList: (request) => this.deleteMemoList(request),
+			addMemoAttachment: (request) => this.addMemoAttachment(request),
+			removeMemoAttachment: (request) => this.removeMemoAttachment(request),
 			getSourceSessionId: () => this.context.session?.sessionId,
+		};
+	}
+
+	/** Lets normal chat see and operate the Automation module (list/run/status/manage). */
+	private automationBridgeHost(): AutomationBridgeToolHost {
+		return {
+			listAutomations: () => this.listAutomations(),
+			getAutomation: (request) => this.getAutomation(request),
+			runAutomation: (request) => this.runAutomation(request),
+			cancelAutomationRun: (request) => this.cancelAutomationRun(request),
+			setAutomationEnabled: (request) => this.setAutomationEnabled(request),
+			createAutomation: (request) => this.createAutomation(request),
+			updateAutomation: (request) => this.updateAutomation(request),
+			openAutomationEditor: (request) => this.openAutomationEditor(request),
+		};
+	}
+
+	/** The subset of this service the session_info tool reads (focused-context scoped, like memoHost). */
+	private sessionHost(): SessionToolHost {
+		return {
+			getSourceSessionId: () => this.context.session?.sessionId,
+			getCurrentTitle: () => this.context.archive.getTitle(),
+			getRecentToolErrors: () => this.context.getRecentToolErrors(),
 		};
 	}
 
@@ -1055,6 +1309,10 @@ export class DesktopAgentService {
 		return this.memoRepository.summary();
 	}
 
+	getMemoStats(): MemoStatsResult {
+		return this.memoRepository.stats();
+	}
+
 	createMemo(request: MemoCreateRequest): MemoItem {
 		const memo = this.memoRepository.create(request);
 		this.memoReminderScheduler.set(memo);
@@ -1063,10 +1321,25 @@ export class DesktopAgentService {
 	}
 
 	updateMemo(request: MemoUpdateRequest): MemoItem {
+		if (request.autoRunAtReminder === true) {
+			const existing = this.memoRepository.get(request.id);
+			if (!existing) throw new Error(`Memo not found: ${request.id}`);
+			const hasReminder =
+				request.reminderAt === undefined
+					? !!existing.reminderAt
+					: request.reminderAt !== null && request.reminderAt.trim().length > 0;
+			if (!hasReminder) throw new Error("Memo needs a reminder time before AI auto-run can be enabled.");
+		}
 		const memo = this.memoRepository.update(request);
 		this.memoReminderScheduler.set(memo);
 		this.emitMemoChanged();
 		return memo;
+	}
+
+	reorderMemo(request: MemoReorderRequest): MemoItem[] {
+		const memos = this.memoRepository.reorderMemo(request);
+		this.emitMemoChanged();
+		return memos;
 	}
 
 	completeMemo(request: MemoCompleteRequest): MemoItem {
@@ -1086,7 +1359,17 @@ export class DesktopAgentService {
 	}
 
 	setMemoReminder(request: MemoSetReminderRequest): MemoItem {
-		const memo = this.memoRepository.setReminder(request.id, request.reminderAt);
+		if (request.autoRunAtReminder === true && !request.reminderAt) {
+			throw new Error("Memo needs a reminder time before AI auto-run can be enabled.");
+		}
+		let memo = this.memoRepository.setReminder(request.id, request.reminderAt);
+		if (request.autoRunAtReminder !== undefined || request.autoRunPrompt !== undefined) {
+			memo = this.memoRepository.update({
+				id: request.id,
+				autoRunAtReminder: request.autoRunAtReminder,
+				autoRunPrompt: request.autoRunPrompt,
+			});
+		}
 		this.memoReminderScheduler.set(memo);
 		this.emitMemoChanged();
 		return memo;
@@ -1097,6 +1380,53 @@ export class DesktopAgentService {
 		const deleted = this.memoRepository.delete(request.id);
 		this.emitMemoChanged();
 		return deleted;
+	}
+
+	batchMemos(request: MemoBatchRequest): MemoBatchResult {
+		const result = this.memoRepository.batch(request);
+		this.memoReminderScheduler.rescheduleAll(this.memoRepository.all());
+		this.emitMemoChanged();
+		return result;
+	}
+
+	listMemoLists(): MemoList[] {
+		return this.memoRepository.listLists();
+	}
+
+	createMemoList(request: MemoListCreateRequest): MemoList {
+		const list = this.memoRepository.createList(request);
+		this.emitMemoChanged();
+		return list;
+	}
+
+	updateMemoList(request: MemoListUpdateRequest): MemoList {
+		const list = this.memoRepository.updateList(request);
+		this.emitMemoChanged();
+		return list;
+	}
+
+	reorderMemoList(request: MemoListReorderRequest): MemoList {
+		const list = this.memoRepository.reorderList(request);
+		this.emitMemoChanged();
+		return list;
+	}
+
+	deleteMemoList(request: MemoListDeleteRequest): boolean {
+		const deleted = this.memoRepository.deleteList(request);
+		this.emitMemoChanged();
+		return deleted;
+	}
+
+	addMemoAttachment(request: MemoAttachmentAddRequest): MemoAttachment {
+		const attachment = this.memoRepository.addAttachment(request);
+		this.emitMemoChanged();
+		return attachment;
+	}
+
+	removeMemoAttachment(request: MemoAttachmentRemoveRequest): boolean {
+		const removed = this.memoRepository.removeAttachment(request);
+		this.emitMemoChanged();
+		return removed;
 	}
 
 	private emitMemoChanged(): void {
@@ -1112,8 +1442,62 @@ export class DesktopAgentService {
 		if (!this.context.isBusy) {
 			const tag = memo.reminderMissed ? "提醒（错过）" : "提醒";
 			const body = memo.notes ? `\n${memo.notes}` : "";
-			this.context.pushMessage("assistant", `⏰ ${tag}：${memo.title}${body}`);
+			this.context.pushMessage("assistant", `${tag}：${memo.title}${body}`);
 		}
+		if (memo.autoRunAtReminder && !missed) {
+			void this.runMemoAutoTask(memo).catch((error: unknown) => {
+				this.reportError(error);
+			});
+		}
+	}
+
+	private async runMemoAutoTask(memo: MemoItem): Promise<void> {
+		if (this.activeMemoAutoRuns.has(memo.id)) return;
+		this.activeMemoAutoRuns.add(memo.id);
+		let context: ConversationContext | undefined;
+		let key: string | undefined;
+		try {
+			const starting = this.memoRepository.markAutoRunStarting(memo.id);
+			if (starting) {
+				this.emit({ type: "memo_changed", memo: starting, memoSummary: this.memoRepository.summary() });
+			}
+			context = await this.createMemoAutoRunConversation(starting ?? memo);
+			key = this.findContextEntry(context.sessionId)?.key;
+			const started = this.memoRepository.markAutoRunStarted(memo.id, context.sessionId);
+			if (started) {
+				this.emit({ type: "memo_changed", memo: started, memoSummary: this.memoRepository.summary() });
+			}
+			await context.prompt(buildMemoAutoRunPrompt(started ?? memo), "automation");
+			const succeeded = this.memoRepository.markAutoRunSucceeded(memo.id);
+			if (succeeded) {
+				this.emit({ type: "memo_changed", memo: succeeded, memoSummary: this.memoRepository.summary() });
+			}
+		} catch (error) {
+			this.memoRepository.markAutoRunFailed(memo.id, error instanceof Error ? error.message : String(error));
+			this.emitMemoChanged();
+			throw error;
+		} finally {
+			this.activeMemoAutoRuns.delete(memo.id);
+			if (context) {
+				if (key) this.sessions.delete(key);
+				await context.dispose({ archiveMode: "flush" });
+				this.emit({ type: "snapshot", snapshot: this.snapshot() });
+			}
+		}
+	}
+
+	async runMemoAutoTaskNow(request: { id: string }): Promise<MemoItem> {
+		const memo = this.memoRepository.get(request.id);
+		if (!memo) throw new Error(`Memo not found: ${request.id}`);
+		if (!memo.reminderAt) throw new Error("Memo needs a reminder time before AI auto-run can be started.");
+		if (!memo.autoRunAtReminder && !memo.lastAutoRunError) {
+			throw new Error("Memo AI auto-run is not enabled.");
+		}
+		await this.runMemoAutoTask(memo);
+		const updated = this.memoRepository.get(request.id);
+		if (!updated) throw new Error(`Memo not found: ${request.id}`);
+		this.emitMemoChanged();
+		return updated;
 	}
 
 	// Automation flows -------------------------------------------------------
@@ -1291,6 +1675,27 @@ export class DesktopAgentService {
 		return context;
 	}
 
+	private async createMemoAutoRunConversation(memo: MemoItem): Promise<ConversationContext> {
+		const profile: ConversationRuntimeProfile = {
+			customTools: this.createCustomTools(),
+			activeToolNames: this.createActiveToolNames(),
+			kind: "memo_auto_run",
+			appendSystemPrompt: [buildMemoAutoRunAppendPrompt(memo)],
+		};
+		const context = new ConversationContext(
+			this.buildContextDeps(),
+			SessionManager.create(this.options.cwd, this.coordinator.paths.sessionsDir),
+			{ profile },
+		);
+		this.registerContext(context, { focus: false });
+		await context.initializeRuntime({
+			sessionStartEvent: { type: "session_start", reason: "new" },
+		});
+		await context.archive.setTitle(`Memo task: ${memo.title}`, "auto");
+		await this.evictIdleSessionsIfNeeded();
+		return context;
+	}
+
 	private async createAutomationConversation(
 		flow: AutomationFlow,
 		run: AutomationRunRecord,
@@ -1300,16 +1705,41 @@ export class DesktopAgentService {
 		abort(): void;
 		finalize(): Promise<void>;
 	}> {
+		// Live progress for the pinned flowchart panel: a single `flowchart` timeline
+		// item is updated in place (by fixed id) as step/finish events arrive. The
+		// accumulator mirrors AutomationView.applyFlowProgress so the bubble lights up
+		// the same active/done nodes the management view does.
+		const progress: { activeNodeId?: string; doneNodeIds: string[] } = { doneNodeIds: [] };
+		let pushFlowchart: (status: AutomationRunStatus) => void = () => {};
 		const runHost: AutomationRunToolHost = {
 			flowId: flow.id,
 			runId: run.id,
-			reportProgress: (event) =>
+			reportProgress: (event) => {
 				this.emitAutomationProgress({
 					...event,
 					flowId: flow.id,
 					runId: run.id,
 					timestamp: new Date().toISOString(),
-				}),
+				});
+				if (event.kind === "step" && event.nodeId) {
+					if (event.phase === "enter") {
+						progress.activeNodeId = event.nodeId;
+					} else if (event.phase === "done") {
+						if (!progress.doneNodeIds.includes(event.nodeId)) progress.doneNodeIds.push(event.nodeId);
+						if (progress.activeNodeId === event.nodeId) progress.activeNodeId = undefined;
+					}
+				}
+				if (event.kind === "finish") {
+					progress.activeNodeId = undefined;
+					const status = event.status ?? "succeeded";
+					// On success, mark every node done so the end node (which the model may
+					// never emit a `done` for) and its incoming edge also turn green.
+					if (status === "succeeded") progress.doneNodeIds = flow.nodes.map((node) => node.id);
+					pushFlowchart(status);
+					return;
+				}
+				pushFlowchart("running");
+			},
 			finishRun: (status, summary) => {
 				this.automationRepository.recordRunFinish(flow.id, run.id, status, { summary });
 				this.emitAutomationChanged(flow.id);
@@ -1335,6 +1765,29 @@ export class DesktopAgentService {
 			sessionStartEvent: { type: "session_start", reason: "new" },
 		});
 		await context.archive.setTitle(`Automation: ${flow.name}`, "auto");
+		// Seed the pinned flowchart panel (order 1 → stays at the top) and keep it in
+		// sync as the run progresses. Re-pushing with the same id replaces the item,
+		// so the final state is archived and replays correctly from history.
+		pushFlowchart = (status) =>
+			context.pushTimeline({
+				id: `flowchart-${run.id}`,
+				kind: "flowchart",
+				title: flow.name,
+				status: status === "running" ? "running" : status === "succeeded" ? "succeeded" : "failed",
+				timestamp: Date.now(),
+				order: 1,
+				flowGraph: {
+					flowId: flow.id,
+					runId: run.id,
+					name: flow.name,
+					nodes: flow.nodes,
+					edges: flow.edges,
+					activeNodeId: progress.activeNodeId,
+					doneNodeIds: [...progress.doneNodeIds],
+					status,
+				},
+			});
+		pushFlowchart("running");
 		await this.evictIdleSessionsIfNeeded();
 		return {
 			sessionId: context.sessionId,
@@ -1730,6 +2183,29 @@ export class DesktopAgentService {
 			await this.mcpManager.applySettings(this.settings.mcp);
 			this.persistMcpSettings();
 		}
+		if (update.browser) {
+			this.persistBrowserSettings();
+		}
+		if (update.experimental) {
+			this.persistExperimentalSettings();
+		}
+		if (update.homeWelcome) {
+			this.persistHomeWelcomeSettings();
+			// Clear cached state so new settings (e.g. weatherApiKey, includeWeather toggle) take effect immediately.
+			this.homeWelcome = undefined;
+			this.homeWelcomeWeatherCache = undefined;
+			void this.refreshHomeWelcome();
+		}
+		if (update.personalization) {
+			this.persistPersonalizationSettings();
+			// Re-resolve location and regenerate the greeting so the new persona shows up.
+			this.userLocationCache = undefined;
+			this.homeWelcome = undefined;
+			void this.refreshHomeWelcome();
+		}
+		if (update.memory) {
+			this.persistMemorySettings();
+		}
 		if (update.sandbox) {
 			this.persistSandbox();
 			// Re-initialize so a changed root/quota/enable takes effect immediately.
@@ -1964,6 +2440,9 @@ export class DesktopAgentService {
 			messages: fragment.messages,
 			timeline: fragment.timeline,
 			pendingConfirmations: fragment.pendingConfirmations,
+			queuedPreInputs: fragment.queuedPreInputs,
+			queuedSteeringMessages: fragment.queuedSteeringMessages,
+			steeringLog: fragment.steeringLog,
 			voiceOverlay: this.voiceOverlay,
 			conversationThinking: fragment.conversationThinking,
 			historyWindow: fragment.historyWindow,
@@ -1973,6 +2452,9 @@ export class DesktopAgentService {
 			sandboxStatus: this.sandboxManager.getStatus(),
 			memoSummary: this.memoRepository.summary(),
 			automationSummary: this.automationRepository.summary(),
+			homeWelcome: this.homeWelcome,
+			liveFlow: fragment.liveFlow,
+			dynamicWindow: fragment.dynamicWindow,
 		};
 	}
 
@@ -1985,6 +2467,50 @@ export class DesktopAgentService {
 			writeFileSync(this.mcpSettingsPath, JSON.stringify(this.mcpManager.getSettings(), null, 2), "utf-8");
 		} catch (error) {
 			console.warn("Failed to persist MCP settings:", error);
+		}
+	}
+
+	private persistBrowserSettings(): void {
+		try {
+			writeFileSync(this.browserSettingsPath, JSON.stringify(this.settings.browser, null, 2), "utf-8");
+		} catch (error) {
+			console.warn("Failed to persist browser settings:", error);
+		}
+	}
+
+	private persistExperimentalSettings(): void {
+		try {
+			writeFileSync(this.experimentalSettingsPath, JSON.stringify(this.settings.experimental, null, 2), "utf-8");
+		} catch (error) {
+			console.warn("Failed to persist experimental settings:", error);
+		}
+	}
+
+	private persistHomeWelcomeSettings(): void {
+		try {
+			writeFileSync(this.homeWelcomeSettingsPath, JSON.stringify(this.settings.homeWelcome, null, 2), "utf-8");
+		} catch (error) {
+			console.warn("Failed to persist home-welcome settings:", error);
+		}
+	}
+
+	private persistPersonalizationSettings(): void {
+		try {
+			writeFileSync(
+				this.personalizationSettingsPath,
+				JSON.stringify(this.settings.personalization, null, 2),
+				"utf-8",
+			);
+		} catch (error) {
+			console.warn("Failed to persist personalization settings:", error);
+		}
+	}
+
+	private persistMemorySettings(): void {
+		try {
+			writeFileSync(this.memorySettingsPath, JSON.stringify(this.settings.memory, null, 2), "utf-8");
+		} catch (error) {
+			console.warn("Failed to persist memory settings:", error);
 		}
 	}
 
@@ -2204,6 +2730,177 @@ export class DesktopAgentService {
 		});
 	}
 
+	/**
+	 * Regenerate the home greeting if warranted. Cheap by design: the signature/age
+	 * gate (shouldRegenerateHomeWelcome) runs on cheap synchronous context BEFORE any
+	 * network/model work, so a static home screen pinged every 30 min spends nothing.
+	 * The renderer pings; this method is the sole cost gatekeeper.
+	 */
+	async refreshHomeWelcome(request?: RefreshHomeWelcomeRequest): Promise<void> {
+		if (!this.settings.homeWelcome.enabled) return;
+		if (this.homeWelcomeGenerating) return;
+
+		const now = new Date();
+		const context = this.buildHomeWelcomeContext(now);
+		const signature = computeHomeWelcomeSignature(context);
+		if (!shouldRegenerateHomeWelcome(this.homeWelcome, signature, now.getTime(), { force: request?.force })) {
+			return;
+		}
+
+		// Cheapest valid flash model for the current connection (mirrors title generation).
+		const connection = resolveDeepSeekApiConnection(this.settings);
+		const authProvider = getDeepSeekAuthProvider(this.settings);
+		const apiKey = await this.authStorage.getApiKey(authProvider, { includeFallback: false });
+		if (!apiKey) return;
+		let modelId: string;
+		if (connection.mode === "relay") {
+			const relayModels = this.settings.deepseekRelayModels ?? [];
+			const flashRelayModel = relayModels.find((model) => /flash/i.test(model.id));
+			const candidate = flashRelayModel?.id ?? this.settings.modelId;
+			try {
+				modelId = getDeepSeekRuntimeModelId(connection.mode, candidate);
+			} catch {
+				return;
+			}
+		} else {
+			modelId = DEEPSEEK_FLASH_MODEL;
+		}
+
+		this.homeWelcomeGenerating = true;
+		try {
+			// Network enrichments happen only once we've decided to (re)generate.
+			await this.enrichHomeWelcomeContext(context);
+			const text = await generateHomeWelcome({
+				baseUrl: connection.baseUrl,
+				apiKey,
+				modelId,
+				context,
+				// Console only — the welcome is global, not tied to a conversation, so it
+				// must not be archived into the focused conversation's event log.
+				onDiagnostic: (diagnostic) => {
+					if (diagnostic.level === "warn" || diagnostic.level === "error") {
+						console.warn(`[home-welcome] ${diagnostic.title}`, diagnostic.details ?? "");
+					}
+				},
+			});
+			if (!text) return;
+			this.homeWelcome = {
+				text,
+				generatedAt: new Date().toISOString(),
+				signature,
+				source: "ai",
+			};
+			this.emit({ type: "home_welcome", homeWelcome: this.homeWelcome });
+		} finally {
+			this.homeWelcomeGenerating = false;
+		}
+	}
+
+	/** Synchronous, zero-network context (date/time/holiday + memo & automation roll-ups). */
+	private buildHomeWelcomeContext(now: Date): HomeWelcomeContext {
+		const memoSummary = this.memoRepository.summary();
+		const titles = memoSummary.upcoming
+			.filter((memo) => memo.status === "active")
+			.slice(0, 3)
+			.map((memo) => memo.title.trim())
+			.filter((title) => title.length > 0);
+		const automationSummary = this.automationRepository.summary();
+		return {
+			dateText: homeWelcomeDateText(now),
+			timeBucket: homeWelcomeTimeBucket(now),
+			holiday: lookupFixedHoliday(now),
+			memo: {
+				active: memoSummary.activeCount,
+				overdue: memoSummary.overdueCount,
+				dueToday: memoSummary.dueTodayCount,
+				titles,
+			},
+			automation: {
+				enabled: automationSummary.enabledCount,
+				missed: automationSummary.missedCount,
+				nextRunText: automationSummary.nextRunAt ? formatNextRunText(automationSummary.nextRunAt, now) : undefined,
+			},
+		};
+	}
+
+	/** Best-effort weather + email + persona enrichment (each gated by settings, cached, non-fatal). */
+	private async enrichHomeWelcomeContext(context: HomeWelcomeContext): Promise<void> {
+		if (this.settings.homeWelcome.includeWeather) {
+			context.weather = await this.getHomeWelcomeWeather();
+		}
+		if (this.settings.homeWelcome.includeEmail) {
+			context.email = await this.getHomeWelcomeEmailGlance();
+		}
+		const persona = this.settings.personalization;
+		if (persona.enabled && (persona.tone || persona.rolePlay || persona.userAddressing)) {
+			context.persona = {
+				tone: persona.tone,
+				rolePlay: persona.rolePlay,
+				userAddressing: persona.userAddressing,
+			};
+		}
+	}
+
+	/**
+	 * Resolve the user's location string for personalization: the manually entered value,
+	 * or (in auto mode) the city from the WeatherAPI auto:ip lookup. Cached until settings change.
+	 * Returns undefined when nothing is configured (auto mode without a WeatherAPI key).
+	 */
+	private async resolveUserLocation(): Promise<string | undefined> {
+		const persona = this.settings.personalization;
+		if (persona.locationMode === "manual") return persona.manualLocation?.trim() || undefined;
+		if (this.userLocationCache) return this.userLocationCache.value;
+		const value = (await this.getHomeWeather())?.city;
+		this.userLocationCache = { value };
+		return value;
+	}
+
+	/**
+	 * Structured current weather for the home widget. A single network request (2h cache)
+	 * serves both the visual card and the AI greeting glance. Returns undefined when no
+	 * WeatherAPI key is configured or the fetch fails (the renderer degrades silently).
+	 */
+	async getHomeWeather(): Promise<HomeWeatherView | undefined> {
+		const apiKey = this.settings.homeWelcome.weatherApiKey;
+		if (!apiKey) return undefined;
+		const TTL_MS = 2 * 60 * 60 * 1000;
+		const cache = this.homeWelcomeWeatherCache;
+		if (cache && Date.now() - cache.fetchedAt < TTL_MS) return cache.value;
+		const value = await fetchWeatherSnapshot(apiKey);
+		this.homeWelcomeWeatherCache = { value, fetchedAt: Date.now() };
+		return value;
+	}
+
+	private async getHomeWelcomeWeather(): Promise<string | undefined> {
+		return formatWeatherGlance(await this.getHomeWeather());
+	}
+
+	private async getHomeWelcomeEmailGlance(): Promise<HomeWelcomeEmailContext | undefined> {
+		const TTL_MS = 20 * 60 * 1000;
+		const cache = this.homeWelcomeEmailCache;
+		if (cache && Date.now() - cache.fetchedAt < TTL_MS) return cache.value;
+		const value = await this.fetchHomeWelcomeEmailGlance();
+		this.homeWelcomeEmailCache = { value, fetchedAt: Date.now() };
+		return value;
+	}
+
+	/**
+	 * Read an unread/latest-subject glance from the email app — ONLY if it is already
+	 * running (never boots the subprocess). Fully defensive: any failure / unexpected
+	 * shape resolves to undefined so the welcome simply omits email.
+	 */
+	private async fetchHomeWelcomeEmailGlance(): Promise<HomeWelcomeEmailContext | undefined> {
+		const baseUrl = this.externalAppHost?.getRunningBaseUrl?.("email-manager");
+		if (!baseUrl) return undefined;
+		try {
+			const res = await fetch(`${baseUrl}/api/v1/mailboxes`, { signal: AbortSignal.timeout(3000) });
+			if (!res.ok) return undefined;
+			return parseEmailGlance(await res.json());
+		} catch {
+			return undefined;
+		}
+	}
+
 	private async classifySkillWithModel(
 		message: string,
 		enabledCapabilities: DesktopCapabilityId[],
@@ -2291,7 +2988,80 @@ const VOLATILE_EVENT_TYPES = new Set<DesktopAssistantEvent["type"]>([
 	"session_notification",
 	"memo_changed",
 	"memo_reminder",
+	"home_welcome",
 ]);
+
+/** Short human text for the next automation run, relative to now (e.g. "今天 23:00"). */
+function formatNextRunText(iso: string, now: Date): string | undefined {
+	const target = new Date(iso);
+	if (Number.isNaN(target.getTime())) return undefined;
+	const hh = String(target.getHours()).padStart(2, "0");
+	const mm = String(target.getMinutes()).padStart(2, "0");
+	const clock = `${hh}:${mm}`;
+	const startOfToday = new Date(now);
+	startOfToday.setHours(0, 0, 0, 0);
+	const dayDiff = Math.floor((target.getTime() - startOfToday.getTime()) / (24 * 60 * 60 * 1000));
+	if (dayDiff <= 0) return `今天 ${clock}`;
+	if (dayDiff === 1) return `明天 ${clock}`;
+	return `${target.getMonth() + 1}月${target.getDate()}日 ${clock}`;
+}
+
+/**
+ * Best-effort extraction of an unread count + latest subject from the email app's
+ * `/mailboxes` payload. The app's schema is not contractually fixed here, so this is
+ * intentionally defensive: it probes a few likely field names and returns undefined
+ * when nothing usable is found (the welcome then omits email).
+ */
+function parseEmailGlance(payload: unknown): HomeWelcomeEmailContext | undefined {
+	const records = collectRecords(payload);
+	if (records.length === 0) return undefined;
+	let unread = 0;
+	let sawUnreadField = false;
+	let latestSubject: string | undefined;
+	for (const record of records) {
+		const unreadValue = firstNumber(record, ["unread", "unreadCount", "unread_count", "unseen", "unseenCount"]);
+		if (unreadValue !== undefined) {
+			unread += unreadValue;
+			sawUnreadField = true;
+		}
+		if (!latestSubject) {
+			latestSubject = firstString(record, ["latestSubject", "lastSubject", "subject", "latest_subject"]);
+		}
+	}
+	if (!sawUnreadField && !latestSubject) return undefined;
+	return { unread, latestSubject };
+}
+
+function collectRecords(payload: unknown): Record<string, unknown>[] {
+	if (Array.isArray(payload)) {
+		return payload.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null);
+	}
+	if (typeof payload === "object" && payload !== null) {
+		for (const key of ["mailboxes", "items", "data", "list", "accounts"]) {
+			const nested = (payload as Record<string, unknown>)[key];
+			if (Array.isArray(nested)) return collectRecords(nested);
+		}
+		return [payload as Record<string, unknown>];
+	}
+	return [];
+}
+
+function firstNumber(record: Record<string, unknown>, keys: string[]): number | undefined {
+	for (const key of keys) {
+		const value = record[key];
+		if (typeof value === "number" && Number.isFinite(value)) return value;
+		if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value);
+	}
+	return undefined;
+}
+
+function firstString(record: Record<string, unknown>, keys: string[]): string | undefined {
+	for (const key of keys) {
+		const value = record[key];
+		if (typeof value === "string" && value.trim()) return value.trim();
+	}
+	return undefined;
+}
 
 export function resolveSystemOperationSkillFile(cwd: string): string {
 	return resolveDesktopSkillFile(cwd, "system");
@@ -2386,6 +3156,48 @@ function buildAutomationRunAppendPrompt(flow: AutomationFlow, run: AutomationRun
 	].join("\n");
 }
 
+function buildLiveFlowAppendPrompt(): string {
+	return [
+		"<live_flow_mode>",
+		"你有一组「实时流程化」工具：flow_plan / flow_step / flow_finish，配合右下角的流程图浮窗。",
+		"当用户的请求是**多步骤、有明确可执行步骤**的任务时：",
+		"1. 先用 flow_plan 把流程拆成有序节点画出来（每个节点给唯一 id、label，可选 instruction 和 next 指向后续节点）。",
+		'2. 然后严格照流程图执行：进入某步前调用 flow_step(id,"enter")，做完调用 flow_step(id,"done")。每次 "done" 的返回会告诉你下一步是哪个节点——照着走，不要跳步或自由发挥。',
+		"3. 遇到问题：先用普通工具研究解决办法，再用 flow_plan **重画流程图**（插入/修改节点反映方案），然后从受影响的节点继续。",
+		"4. 全部完成后调用 flow_finish 汇报结果。",
+		"重要：如果步骤还不清晰，**先用普通工具调研/思考/尝试**把流程弄清楚，再 flow_plan，不要画自己跟不动的臆测流程。",
+		"闲聊、单步小请求、纯问答**不要**画流程图，直接正常回答即可。",
+		"</live_flow_mode>",
+	].join("\n");
+}
+
+function buildMemoAutoRunAppendPrompt(memo: MemoItem): string {
+	return [
+		"<memo_auto_run_mode>",
+		`Memo id: ${memo.id}`,
+		`Memo title: ${memo.title}`,
+		"你正在执行一条到点触发的备忘录任务。把它当作用户已经授权的定时待办，而不是普通提醒。",
+		"只执行这条备忘录描述的任务；需要审批的桌面动作仍按现有权限流等待审批，不要假装成功。",
+		"完成后用简短中文说明结果；如果无法完成，说明原因和下一步建议。",
+		"</memo_auto_run_mode>",
+	].join("\n");
+}
+
+function buildMemoAutoRunPrompt(memo: MemoItem): string {
+	const prompt = memo.autoRunPrompt?.trim();
+	const notes = memo.notes.trim();
+	const parts = [
+		"# 定时备忘录任务",
+		"",
+		`标题：${memo.title}`,
+		memo.reminderAt ? `触发时间：${memo.reminderAt}` : undefined,
+		memo.dueAt ? `截止时间：${memo.dueAt}` : undefined,
+		notes ? `备注：\n${notes}` : undefined,
+		prompt ? `执行指令：\n${prompt}` : undefined,
+	];
+	return parts.filter((part): part is string => typeof part === "string").join("\n\n");
+}
+
 function normalizeAutomationMutationRequest<T extends AutomationCreateRequest | AutomationUpdateRequest>(
 	request: T,
 ): T {
@@ -2478,6 +3290,28 @@ export function detectMusicControlMcpTools(activeToolNames: string[]): string[] 
 	return activeToolNames.filter((name) => name.startsWith("mcp_") && signature.test(name));
 }
 
+/**
+ * Build the persona/locale system-prompt block from personalization settings.
+ * Returns "" when there is nothing to say so the caller can skip an empty block.
+ * Exported for tests.
+ */
+export function buildPersonalizationAppendPrompt(p: PersonalizationSettings, location?: string): string {
+	const directives: string[] = [];
+	if (p.userAddressing?.trim()) directives.push(`称呼用户时使用「${p.userAddressing.trim()}」。`);
+	if (p.rolePlay?.trim()) directives.push(`以「${p.rolePlay.trim()}」的身份/角色与用户交流，保持该人设。`);
+	if (p.tone?.trim()) directives.push(`整体语气保持「${p.tone.trim()}」。`);
+	if (location?.trim())
+		directives.push(`用户当前所在地：${location.trim()}。涉及时间、天气、出行、本地服务等信息时据此默认。`);
+	if (directives.length === 0) return "";
+	return [
+		"<personalization>",
+		"以下是用户的个性化偏好，请在不违反安全与事实的前提下贯穿整个对话：",
+		...directives.map((d) => `- ${d}`),
+		"注意：个性化只影响口吻、称呼与角色风格，不得改变工具调用的正确性、事实准确性或安全边界。",
+		"</personalization>",
+	].join("\n");
+}
+
 export function buildMcpAppendPrompt(activeToolNames: string[] = []): string {
 	const musicTools = detectMusicControlMcpTools(activeToolNames);
 	const lines = [
@@ -2516,6 +3350,18 @@ export function buildTokenSavingAppendPrompt(): string {
 		"If a page is unchanged after a read_page call, stop rereading it; switch to query_elements, a targeted selector, a targeted evaluate_js extraction, or the existing snapshot.",
 		"Use evaluate_js for narrow DOM extraction only. Do not dump full document HTML or body text unless the user explicitly needs it.",
 		"</token_saving_browser_snapshots>",
+	].join("\n");
+}
+
+export function buildLongRunningTasksAppendPrompt(): string {
+	return [
+		"<long_running_tasks>",
+		"After starting a long-running task, do not tight-poll status tools.",
+		"Prefer a status/progress tool's blocking wait parameter such as waitForChange=true when available.",
+		"When no blocking status parameter exists, call wait before checking again; choose the interval from ETA when available, otherwise default to about 10-15 seconds.",
+		"Waiting inside a tool costs no model turns. Use it instead of repeated immediate status checks.",
+		"Do not tell the user every time you are checking again. Report only meaningful progress, completion, errors, or a material blocker.",
+		"</long_running_tasks>",
 	].join("\n");
 }
 
@@ -2590,7 +3436,14 @@ function normalizeDeepSeekRelayModels(
 	return normalized;
 }
 
-export function normalizeSettings(update: Partial<DesktopAssistantSettings> | undefined): DesktopAssistantSettings {
+type DesktopAssistantSettingsUpdate = Omit<Partial<DesktopAssistantSettings>, "experimental"> & {
+	experimental?: Partial<{
+		errorSelfSummary: Partial<ExperimentalSettings["errorSelfSummary"]>;
+		liveFlow: Partial<ExperimentalSettings["liveFlow"]>;
+	}>;
+};
+
+export function normalizeSettings(update: DesktopAssistantSettingsUpdate | undefined): DesktopAssistantSettings {
 	const normalizedRelayModels = normalizeDeepSeekRelayModels(update?.deepseekRelayModels);
 	const mergedVoice = {
 		...DEFAULT_DESKTOP_ASSISTANT_SETTINGS.voice,
@@ -2681,17 +3534,57 @@ export function normalizeSettings(update: Partial<DesktopAssistantSettings> | un
 			searxngUrl: update?.webSearch?.searxngUrl,
 		},
 		browser: normalizeBrowserSettings(update?.browser),
+		office: normalizeOfficeSettings(update?.office),
 		mcp: normalizeMcpSettings(update?.mcp),
 		memory: {
 			enabled: update?.memory?.enabled ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory.enabled,
 			maxInjected: normalizeMemoryLimit(update?.memory?.maxInjected),
 			autoExtract: update?.memory?.autoExtract ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory.autoExtract,
+			allowExternalContextExtraction:
+				update?.memory?.allowExternalContextExtraction ??
+				DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory.allowExternalContextExtraction,
+			allowAssistantDerivedFacts:
+				update?.memory?.allowAssistantDerivedFacts ??
+				DEFAULT_DESKTOP_ASSISTANT_SETTINGS.memory.allowAssistantDerivedFacts,
 		},
 		tokenSaving: {
 			enabled: update?.tokenSaving?.enabled ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.tokenSaving.enabled,
 		},
 		autoTitle: {
 			enabled: update?.autoTitle?.enabled ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.autoTitle.enabled,
+		},
+		homeWelcome: {
+			enabled: update?.homeWelcome?.enabled ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.homeWelcome.enabled,
+			includeWeather:
+				update?.homeWelcome?.includeWeather ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.homeWelcome.includeWeather,
+			weatherApiKey:
+				update?.homeWelcome?.weatherApiKey ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.homeWelcome.weatherApiKey,
+			includeEmail: update?.homeWelcome?.includeEmail ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.homeWelcome.includeEmail,
+		},
+		personalization: {
+			enabled: update?.personalization?.enabled ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.personalization.enabled,
+			tone: update?.personalization?.tone ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.personalization.tone,
+			rolePlay: update?.personalization?.rolePlay ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.personalization.rolePlay,
+			userAddressing:
+				update?.personalization?.userAddressing ??
+				DEFAULT_DESKTOP_ASSISTANT_SETTINGS.personalization.userAddressing,
+			locationMode:
+				update?.personalization?.locationMode ?? DEFAULT_DESKTOP_ASSISTANT_SETTINGS.personalization.locationMode,
+			manualLocation:
+				update?.personalization?.manualLocation ??
+				DEFAULT_DESKTOP_ASSISTANT_SETTINGS.personalization.manualLocation,
+		},
+		experimental: {
+			errorSelfSummary: {
+				enabled:
+					update?.experimental?.errorSelfSummary?.enabled ??
+					DEFAULT_DESKTOP_ASSISTANT_SETTINGS.experimental.errorSelfSummary.enabled,
+			},
+			liveFlow: {
+				enabled:
+					update?.experimental?.liveFlow?.enabled ??
+					DEFAULT_DESKTOP_ASSISTANT_SETTINGS.experimental.liveFlow.enabled,
+			},
 		},
 		sandbox: normalizeSandboxSettings(update?.sandbox),
 	};
@@ -2741,6 +3634,20 @@ export function normalizeBrowserSettings(update?: Partial<BrowserSettings>): Bro
 
 function normalizeAiBrowserPreference(value: unknown, fallback: AiBrowserPreference): AiBrowserPreference {
 	if (value === "built_in" || value === "external" || value === "auto") return value;
+	return fallback;
+}
+
+export function normalizeOfficeSettings(
+	update?: Partial<DesktopAssistantSettings["office"]>,
+): DesktopAssistantSettings["office"] {
+	const d = DEFAULT_DESKTOP_ASSISTANT_SETTINGS.office;
+	return {
+		aiOfficePreference: normalizeAiOfficePreference(update?.aiOfficePreference, d.aiOfficePreference),
+	};
+}
+
+export function normalizeAiOfficePreference(value: unknown, fallback: AiOfficePreference): AiOfficePreference {
+	if (value === "live" || value === "file" || value === "auto") return value;
 	return fallback;
 }
 
@@ -2888,6 +3795,62 @@ function readPersistedMcpSettings(path: string): DesktopAssistantSettings["mcp"]
 	}
 }
 
+function readPersistedBrowserSettings(path: string): BrowserSettings | undefined {
+	try {
+		if (!existsSync(path)) return undefined;
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<BrowserSettings>;
+		return normalizeBrowserSettings(parsed);
+	} catch (error) {
+		console.warn("Failed to read persisted browser settings:", error);
+		return undefined;
+	}
+}
+
+function readPersistedExperimentalSettings(path: string): DesktopAssistantSettings["experimental"] | undefined {
+	try {
+		if (!existsSync(path)) return undefined;
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<DesktopAssistantSettings["experimental"]>;
+		return normalizeSettings({ experimental: parsed as DesktopAssistantSettings["experimental"] }).experimental;
+	} catch (error) {
+		console.warn("Failed to read persisted experimental settings:", error);
+		return undefined;
+	}
+}
+
+function readPersistedHomeWelcomeSettings(path: string): DesktopAssistantSettings["homeWelcome"] | undefined {
+	try {
+		if (!existsSync(path)) return undefined;
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<DesktopAssistantSettings["homeWelcome"]>;
+		return normalizeSettings({ homeWelcome: parsed as DesktopAssistantSettings["homeWelcome"] }).homeWelcome;
+	} catch (error) {
+		console.warn("Failed to read persisted home-welcome settings:", error);
+		return undefined;
+	}
+}
+
+function readPersistedPersonalizationSettings(path: string): DesktopAssistantSettings["personalization"] | undefined {
+	try {
+		if (!existsSync(path)) return undefined;
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<DesktopAssistantSettings["personalization"]>;
+		return normalizeSettings({ personalization: parsed as DesktopAssistantSettings["personalization"] })
+			.personalization;
+	} catch (error) {
+		console.warn("Failed to read persisted personalization settings:", error);
+		return undefined;
+	}
+}
+
+function readPersistedMemorySettings(path: string): DesktopAssistantSettings["memory"] | undefined {
+	try {
+		if (!existsSync(path)) return undefined;
+		const parsed = JSON.parse(readFileSync(path, "utf-8")) as Partial<DesktopAssistantSettings["memory"]>;
+		return normalizeSettings({ memory: parsed as DesktopAssistantSettings["memory"] }).memory;
+	} catch (error) {
+		console.warn("Failed to read persisted memory settings:", error);
+		return undefined;
+	}
+}
+
 function normalizeVoiceSttProvider(provider: unknown): DesktopAssistantSettings["voice"]["sttProvider"] {
 	if (provider === "openai" || provider === "siliconflow" || provider === "groq" || provider === "custom") {
 		return provider;
@@ -2916,6 +3879,12 @@ function sanitizeSettingsForArchive(
 			? {
 					...settings.webSearch,
 					apiKey: settings.webSearch.apiKey ? "[redacted]" : undefined,
+				}
+			: undefined,
+		homeWelcome: settings.homeWelcome
+			? {
+					...settings.homeWelcome,
+					weatherApiKey: settings.homeWelcome.weatherApiKey ? "[redacted]" : undefined,
 				}
 			: undefined,
 		mcp: redactMcpSettings(settings.mcp),

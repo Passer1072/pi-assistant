@@ -40,6 +40,8 @@ const loadHomeView = () => import("./home/HomeView.tsx").then((module) => ({ def
 const loadAutomationView = () =>
 	import("./automation/AutomationView.tsx").then((module) => ({ default: module.AutomationView }));
 const loadMemoView = () => import("./memo/MemoView.tsx").then((module) => ({ default: module.MemoView }));
+const loadMoreAppsView = () =>
+	import("./more-apps/MoreAppsView.tsx").then((module) => ({ default: module.MoreAppsView }));
 const loadFlowEditorView = () =>
 	import("./automation/FlowEditorView.tsx").then((module) => ({ default: module.FlowEditorView }));
 const loadSettingsView = () =>
@@ -60,6 +62,7 @@ const loadBuiltInBrowserView = () =>
 const HomeView = lazy(loadHomeView);
 const AutomationView = lazy(loadAutomationView);
 const MemoView = lazy(loadMemoView);
+const MoreAppsView = lazy(loadMoreAppsView);
 const FlowEditorView = lazy(loadFlowEditorView);
 const SettingsView = lazy(loadSettingsView);
 const McpManagerView = lazy(loadMcpManagerView);
@@ -329,6 +332,10 @@ function App() {
 			if (event.type === "automation_missed" && event.automation) {
 				pushToast({ tone: "awaiting", title: "错过的自动化", message: event.automation.name }, 9000);
 			}
+			if (event.type === "home_welcome" && event.homeWelcome) {
+				const homeWelcome = event.homeWelcome;
+				setLiveSnapshot((current) => (current ? { ...current, homeWelcome } : current));
+			}
 		});
 		return () => {
 			cancelled = true;
@@ -488,6 +495,20 @@ function App() {
 		};
 	}, [isUtilityWindow, petConfig.enabled, petConfig.speciesId, petConfig.colorId]);
 
+	// Drive the home greeting: ping once the snapshot is ready, then every 30 min.
+	// The renderer is a dumb pinger — the main process is the sole cost gatekeeper
+	// (it only calls the model when the context changed / interval elapsed).
+	useEffect(() => {
+		if (isUtilityWindow || !window.desktopAssistant || startupPhase !== "ready") return undefined;
+		const ping = () => {
+			if (document.visibilityState === "hidden") return;
+			void window.desktopAssistant?.refreshHomeWelcome().catch(() => {});
+		};
+		ping();
+		const interval = setInterval(ping, 30 * 60 * 1000);
+		return () => clearInterval(interval);
+	}, [isUtilityWindow, startupPhase]);
+
 	const sandboxStatus = liveSnapshot?.sandboxStatus;
 	const sandboxPhase = sandboxStatus?.phase;
 	useEffect(() => {
@@ -595,14 +616,93 @@ function App() {
 			return;
 		}
 		if ((!text && attachments.length === 0) || !window.desktopAssistant) return;
+		const isRunning = liveSnapshotRef.current?.isRunning ?? false;
+		if (isRunning && attachments.length > 0) {
+			pushWarning("附件暂不支持预输入或引导，请等待当前回答结束后发送。");
+			return;
+		}
 		voiceDraftTextRef.current = "";
 		voiceDisplayedTextRef.current = "";
 		setPrompt("");
 		const pendingAttachments = attachments;
-		clearAttachments();
-		const next = await window.desktopAssistant.prompt({ message: text, source: "text", attachments: pendingAttachments });
+		if (!isRunning) clearAttachments();
+		const next = await window.desktopAssistant.prompt({
+			message: text,
+			source: "text",
+			attachments: isRunning ? [] : pendingAttachments,
+			delivery: isRunning ? "preInput" : "prompt",
+			sessionId: liveSnapshotRef.current?.focusedSessionId,
+		});
 		setLiveSnapshot(next);
-		await refreshHistory();
+		if (!isRunning) await refreshHistory();
+	};
+
+	const sendSteerPrompt = async () => {
+		const text = prompt.trim();
+		if (!text || !window.desktopAssistant) return;
+		if (!(liveSnapshotRef.current?.isRunning ?? false)) {
+			await sendPrompt();
+			return;
+		}
+		if (attachments.length > 0) {
+			pushWarning("附件暂不支持预输入或引导，请先移除附件。");
+			return;
+		}
+		voiceDraftTextRef.current = "";
+		voiceDisplayedTextRef.current = "";
+		setPrompt("");
+		const next = await window.desktopAssistant.prompt({
+			message: text,
+			source: "text",
+			delivery: "steer",
+			sessionId: liveSnapshotRef.current?.focusedSessionId,
+		});
+		setLiveSnapshot(next);
+	};
+
+	const deleteQueuedPreInput = async (id: string) => {
+		if (!window.desktopAssistant) return;
+		const next = await window.desktopAssistant.deleteQueuedPreInput({
+			id,
+			sessionId: liveSnapshotRef.current?.focusedSessionId,
+		});
+		setLiveSnapshot(next);
+	};
+
+	const steerPreInput = async (id: string) => {
+		if (!window.desktopAssistant) return;
+		const snapshot = liveSnapshotRef.current;
+		const item = snapshot?.queuedPreInputs.find((p) => p.id === id);
+		if (!item) return;
+		// Delete from pre-input queue first
+		await window.desktopAssistant.deleteQueuedPreInput({
+			id,
+			sessionId: snapshot?.focusedSessionId,
+		});
+		// Then send as a steer
+		const next = await window.desktopAssistant.prompt({
+			message: item.text,
+			source: "text",
+			delivery: "steer",
+			sessionId: snapshot?.focusedSessionId,
+		});
+		setLiveSnapshot(next);
+	};
+
+	const withdrawQueuedPreInput = async (id: string) => {
+		if (!window.desktopAssistant) return;
+		if (prompt.trim()) {
+			pushWarning("请先处理当前输入，再修改预输入。");
+			return;
+		}
+		const result = await window.desktopAssistant.withdrawQueuedPreInput({
+			id,
+			sessionId: liveSnapshotRef.current?.focusedSessionId,
+		});
+		setLiveSnapshot(result.snapshot);
+		if (result.queuedPreInput) {
+			setPrompt(result.queuedPreInput.text);
+		}
 	};
 
 	const toggleWindowMode = () => {
@@ -968,6 +1068,10 @@ function App() {
 							onRemoveAttachment={removeAttachment}
 							onToggleConversationThinking={updateConversationThinking}
 							onSend={sendPrompt}
+							onSteer={sendSteerPrompt}
+							onSteerPreInput={steerPreInput}
+							onDeletePreInput={deleteQueuedPreInput}
+							onWithdrawPreInput={withdrawQueuedPreInput}
 							onStartVoice={startVoice}
 							onAbort={onAbort}
 							onMenu={() => {
@@ -1056,6 +1160,24 @@ function App() {
 						) : null}
 					</div>
 
+					<div className={`overlay-page overlay-right overlay-more-apps ${route === "more-apps" ? "active" : ""}`}>
+						{mountedRoutes["more-apps"] ? (
+							<Suspense fallback={<StartupFallback label="加载更多应用" />}>
+								<MoreAppsView
+									snapshot={liveSnapshot}
+									onBack={closeOverlay}
+									onMenu={() => {
+										setDrawerOpen(true);
+										void refreshHistory();
+									}}
+									wakeModels={wakeModels}
+									windowMode={windowMode}
+									onToggleWindowMode={toggleWindowMode}
+								/>
+							</Suspense>
+						) : null}
+					</div>
+
 					<div className={`overlay-page overlay-right overlay-settings ${route === "settings" ? "active" : ""}`}>
 						{mountedRoutes.settings ? (
 							<Suspense fallback={<StartupFallback label="加载设置" />}>
@@ -1098,6 +1220,7 @@ function App() {
 					}}
 					onOpenAutomation={() => openOverlay("automation")}
 					onOpenMemo={() => openOverlay("memo")}
+					onOpenMoreApps={() => openOverlay("more-apps")}
 					onOpenSettings={() => openOverlay("settings")}
 					activeId={liveSnapshot.sessionId}
 					loadingId={loadingConversationSessionId}
@@ -1177,6 +1300,9 @@ function createFallbackSnapshot(): DesktopAssistantSnapshot {
 		messages: [] satisfies ChatMessageView[],
 		timeline: [] satisfies TimelineItem[],
 		pendingConfirmations: [],
+		queuedPreInputs: [],
+		queuedSteeringMessages: [],
+		steeringLog: [],
 		voiceOverlay: {
 			visible: false,
 			state: "idle",

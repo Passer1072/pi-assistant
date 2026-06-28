@@ -128,6 +128,9 @@ describe("desktop assistant MCP", () => {
 				messages: [],
 				timeline: [],
 				pendingConfirmations: [],
+				queuedPreInputs: [],
+				queuedSteeringMessages: [],
+				steeringLog: [],
 				voiceOverlay: { visible: false, state: "idle", transcript: "" },
 				conversationThinking: {
 					enabled: true,
@@ -281,6 +284,96 @@ describe("desktop assistant MCP", () => {
 		expect(readMcpDetailsPayload(response.details).settings.permissionMode).toBe("full_access");
 	});
 
+	it("built-in MCP can update memory settings through assistant_update_settings", async () => {
+		let currentSettings: DesktopAssistantSettings = {
+			...DEFAULT_DESKTOP_ASSISTANT_SETTINGS,
+			mcp: { enabled: true, servers: DEFAULT_DESKTOP_ASSISTANT_SETTINGS.mcp.servers },
+		};
+		const manager = new McpClientManager({
+			initialSettings: currentSettings.mcp,
+			getSettings: () => currentSettings,
+			updateSettings: async (update) => {
+				currentSettings = { ...currentSettings, ...update };
+				return fakeSnapshot(currentSettings);
+			},
+			requestRoute: () => {},
+		});
+		await manager.applySettings(currentSettings.mcp);
+		const tool = manager.getTools().find((entry) => entry.name === "mcp_desktop_assistant_assistant_update_settings");
+		if (!tool) throw new Error("built-in MCP update settings tool missing");
+
+		const response = await tool.execute(
+			"tool-memory-update",
+			{
+				memory: {
+					enabled: true,
+					maxInjected: 8,
+					autoExtract: true,
+					allowExternalContextExtraction: true,
+					allowAssistantDerivedFacts: true,
+				},
+			},
+			undefined,
+			undefined,
+			stubContext(),
+		);
+
+		expect(currentSettings.memory).toMatchObject({
+			enabled: true,
+			maxInjected: 8,
+			autoExtract: true,
+			allowExternalContextExtraction: true,
+			allowAssistantDerivedFacts: true,
+		});
+		expect(response.details).toMatchObject({ status: "succeeded" });
+		expect(readMcpDetailsPayload(response.details).settings.memory).toMatchObject(currentSettings.memory);
+		await manager.shutdownAll();
+	});
+
+	it("built-in MCP can update memory settings through assistant_set_memory", async () => {
+		let currentSettings: DesktopAssistantSettings = {
+			...DEFAULT_DESKTOP_ASSISTANT_SETTINGS,
+			mcp: { enabled: true, servers: DEFAULT_DESKTOP_ASSISTANT_SETTINGS.mcp.servers },
+		};
+		const manager = new McpClientManager({
+			initialSettings: currentSettings.mcp,
+			getSettings: () => currentSettings,
+			updateSettings: async (update) => {
+				currentSettings = { ...currentSettings, ...update };
+				return fakeSnapshot(currentSettings);
+			},
+			requestRoute: () => {},
+		});
+		await manager.applySettings(currentSettings.mcp);
+		const tool = manager.getTools().find((entry) => entry.name === "mcp_desktop_assistant_assistant_set_memory");
+		if (!tool) throw new Error("built-in MCP set memory tool missing");
+
+		const response = await tool.execute(
+			"tool-memory-set",
+			{
+				enabled: true,
+				maxInjected: 3,
+				autoExtract: true,
+				allowExternalContextExtraction: false,
+				allowAssistantDerivedFacts: true,
+			},
+			undefined,
+			undefined,
+			stubContext(),
+		);
+
+		expect(currentSettings.memory).toMatchObject({
+			enabled: true,
+			maxInjected: 3,
+			autoExtract: true,
+			allowExternalContextExtraction: false,
+			allowAssistantDerivedFacts: true,
+		});
+		expect(response.details).toMatchObject({ status: "succeeded" });
+		expect(readMcpMemoryPayload(response.details).memory).toMatchObject(currentSettings.memory);
+		await manager.shutdownAll();
+	});
+
 	it("built-in MCP cannot change system capability skill names", async () => {
 		let currentSettings: DesktopAssistantSettings = {
 			...DEFAULT_DESKTOP_ASSISTANT_SETTINGS,
@@ -368,6 +461,9 @@ function fakeSnapshot(settings: DesktopAssistantSettings) {
 		messages: [],
 		timeline: [],
 		pendingConfirmations: [],
+		queuedPreInputs: [],
+		queuedSteeringMessages: [],
+		steeringLog: [],
 		voiceOverlay: { visible: false, state: "idle" as const, transcript: "" },
 		conversationThinking: {
 			enabled: true,
@@ -393,6 +489,22 @@ function readMcpDetailsPayload(details: unknown): { settings: DesktopAssistantSe
 		throw new Error("Expected MCP tool text content.");
 	}
 	return JSON.parse(text) as { settings: DesktopAssistantSettings };
+}
+
+function readMcpMemoryPayload(details: unknown): { memory: DesktopAssistantSettings["memory"] } {
+	if (typeof details !== "object" || details === null) {
+		throw new Error("Expected MCP tool details object.");
+	}
+	const stdout = (details as { stdout?: unknown }).stdout;
+	if (typeof stdout !== "string") {
+		throw new Error("Expected MCP tool details stdout.");
+	}
+	const outer = JSON.parse(stdout) as { content?: Array<{ text?: string }> };
+	const text = outer.content?.[0]?.text;
+	if (typeof text !== "string") {
+		throw new Error("Expected MCP tool text content.");
+	}
+	return JSON.parse(text) as { memory: DesktopAssistantSettings["memory"] };
 }
 
 function stubContext() {

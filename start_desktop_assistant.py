@@ -139,6 +139,13 @@ def main() -> int:
     env["ELECTRON_ENABLE_STACK_DUMPING"] = "1"
     env["FORCE_COLOR"] = env.get("FORCE_COLOR", "1")
     env["PYTHONUNBUFFERED"] = "1"
+    # Give the Electron main process more V8 old-space headroom for long sessions.
+    # The agent (DesktopAgentService, conversation state, LLM transcript) all run
+    # in the main process; the default ~1GB ceiling is reached during multi-hour
+    # browser/automation runs. This is headroom only — the real fix is bounding
+    # retained state (see B1/B2). Respect any value the user already set.
+    if "--max-old-space-size" not in env.get("NODE_OPTIONS", ""):
+        env["NODE_OPTIONS"] = (env.get("NODE_OPTIONS", "") + " --max-old-space-size=4096").strip()
     vite_process: subprocess.Popen[str] | None = None
 
     try:

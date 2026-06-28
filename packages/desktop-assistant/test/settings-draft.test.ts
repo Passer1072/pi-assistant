@@ -124,4 +124,23 @@ describe("settings draft helpers", () => {
 
 		expect(settings.tokenSaving.enabled).toBe(true);
 	});
+
+	it("keeps memory settings when applying the draft", () => {
+		const memory = {
+			enabled: true,
+			maxInjected: 12,
+			autoExtract: true,
+			allowExternalContextExtraction: true,
+			allowAssistantDerivedFacts: true,
+		};
+		const settings = normalizeDraftSettingsBeforeApply(
+			{
+				...DEFAULT_DESKTOP_ASSISTANT_SETTINGS,
+				memory,
+			},
+			[],
+		);
+
+		expect(settings.memory).toEqual(memory);
+	});
 });

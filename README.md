@@ -2,7 +2,7 @@
 
 # 🐧 Pi 桌面助手 · Desktop Assistant
 
-**一个 Windows 优先、本地优先的 AI 桌面助手——会说话、能操作电脑、可自我进化。**
+**一个 Windows 优先、本地优先的 AI 桌面助手——会说话、能操作电脑、能把长任务编排成流程图并持续复用。**
 
 基于 [Pi Agent Runtime](https://github.com/earendil-works/pi) 构建，默认接入 DeepSeek V4，全程离线唤醒，桌面动作可沙箱审批。
 
@@ -29,6 +29,8 @@
 
 它不是一个云端套壳——而是把 Pi 的 Agent 运行时搬到桌面，外接一整套**本机自动化工具 + 可热插拔的 MCP 插件 + 可自我进化的工具锻造框架**。
 
+其中一个最有辨识度的能力，是把**自动化**和**流程图编辑器**直接结合起来：重复性长任务不再只是“一次性跑完”的命令，而是可以沉淀成可编辑、可复用、可视化的流程。你既可以手动搭节点，也可以直接把需求流程告诉 AI，让它帮你**自动画图、补节点、改分支、调整执行逻辑**，并在运行时直观看到当前节点、分支走向与测试日志。
+
 > 🔑 仓库**不含任何 API Key**。在应用设置里填入 DeepSeek Key，或设置环境变量 `DEEPSEEK_API_KEY` 即可。
 
 ---
@@ -39,15 +41,21 @@
 |---|---|---|
 | 🎙️ | **离线语音唤醒** | sherpa-onnx KWS 关键词检测，默认唤醒词「小派」，全离线、无需训练；中文唤醒词改一行字即可，自动转拼音 token |
 | 🗣️ | **说话即下令 / 运行中打断** | 唤醒 → 说话 → 执行；模型回答途中再喊一声唤醒词即可**立即打断**当前会话 |
-| 🖱️ | **桌面自动化** | 找/开应用、窗口与多媒体控制、键鼠合成、屏幕观察与截图、安全 Shell 执行 |
+| 🖱️ | **桌面自动化 + 流程编排** | 找/开应用、窗口与多媒体控制、键鼠合成、屏幕观察与截图、安全 Shell 执行；重复性长任务可沉淀为流程图并复用 |
+| 🧭 | **AI 流程图编辑器** | 用自然语言描述目标流程，让 AI 自动画图、改图、补节点、修分支；运行状态、节点路径、测试日志可视化查看 |
 | 📄 | **Office 文档操作** | 创建/读取/编辑 Word、Excel、PPT；内置 COM + 可选文件型 MCP，能力门控 + 技能路由 |
 | 🛡️ | **沙箱 + 边界审批** | 真沙箱工作区 + `policy-engine` 唯一裁决，四种模式重定义，真实动作需审批 |
 | 🔌 | **MCP 插件体系** | 全局开关 + 本地 stdio 服务管理；内置浏览器、Steam、网易云、Forge 四个示例 |
 | 🧬 | **Forge 自演化工具** | AI 在目标应用里逆向、试验，把新能力以数据持久化为新工具，可跨机器分享 |
 | 🌐 | **浏览器接管** | 控制 Chrome/Edge：接管标签页（不碰活跃页）+ 页面内虚拟鼠标（CDP 合成，不动真鼠标） |
+| 🪟 | **灵动窗** | 每会话浮出多 facet 面板：文件树 / 网页快照 / 命令终端 / 实时流程图；可拖拽折叠，历史可重建 |
+| 🗂️ | **更多应用平台** | 接入外部本地 Web 应用（email-manager · E-Book），独立窗口 + 子进程桥 + AI 交互 |
+| 🏠 | **AI 首页欢迎语** | DeepSeek Flash 动态生成今日概览（待办 / 自动化 / 天气 / 邮箱），右上角天气卡片实时刷新 |
+| ⚡ | **实时流程化** | 普通会话内模型自驱实时画流程图并边跑边改；右下角可拖拽折叠浮窗 |
 | 🐱 | **桌宠** | 像素猫 / 狐狸桌宠，canvas overlay + 物理 + 情绪状态机，`/cat` 召唤 |
 | 🧩 | **多会话并行** | Map 编排 + 焦点切换 + 桌面动作互斥 + 状态点/通知 + LRU 驱逐 |
-| 💾 | **本地记忆与归档** | 对话归档、自动标题、记忆库；Token 节省的冻结式上下文压缩 |
+| 💾 | **本地记忆与归档** | 对话归档、自动标题、记忆库；冻结式上下文压缩防 DeepSeek 缓存击穿 |
+| 📝 | **出错自我总结** | 模型遇工具报错后自动复盘并写入备忘录，便于追溯和持续改进 |
 
 ---
 
@@ -56,7 +64,8 @@
 ```mermaid
 flowchart LR
     subgraph R["🖼️ 渲染进程 (React 19 + Vite)"]
-        UI["聊天 · 时间线 · 设置<br/>唤醒覆盖层 · 桌宠"]
+        UI["聊天 · 时间线 · 设置<br/>唤醒覆盖层 · 桌宠 · 灵动窗"]
+        HOME["首页 · AI 欢迎语 · 天气"]
         MIC["麦克风采集<br/>16kHz 重采样"]
     end
 
@@ -66,21 +75,26 @@ flowchart LR
         AUTO["桌面自动化主机<br/>窗口 / 键鼠 / Shell"]
         SANDBOX["沙箱 + Policy Engine<br/>边界审批"]
         MCPHOST["MCP 主机"]
+        EXTAPP["外部应用控制器<br/>子进程桥 (email · E-Book)"]
     end
 
     subgraph EXT["🔌 外部能力"]
         NATIVE["原生模块<br/>nut-js · node-window-manager"]
         SERVERS["MCP 服务<br/>浏览器 · Steam · 网易云 · Forge"]
+        WEBAPPS["本地 Web 应用<br/>email-manager · E-Book"]
     end
 
     UI <-->|IPC| AGENT
+    HOME <-->|IPC| AGENT
     MIC -->|音频帧 IPC| VOICE
     VOICE -->|wake 事件| UI
     AGENT --> AUTO
     AGENT --> MCPHOST
+    AGENT --> EXTAPP
     AUTO --> SANDBOX
     AUTO --> NATIVE
     MCPHOST --> SERVERS
+    EXTAPP --> WEBAPPS
 ```
 
 **要点**：语音推理跑在主进程的原生代码里，音频只在本机进程间流转；所有改动真实系统的桌面动作先过 `policy-engine` 与沙箱边界；MCP 工具在普通桌面工具之前暴露，可全局一键开关。
@@ -210,6 +224,12 @@ python .\start_desktop_assistant.py --skip-install --skip-build
 
 ## 🖱️ 桌面自动化工具
 
+桌面自动化不只是“调用一串工具”，还可以进一步升级为**可编排的自动化流程**。
+
+- **流程图式编排**：把长任务拆成开始、任务、条件、结束等节点，串成可以保存和复跑的自动化流程。
+- **AI 直接画图 / 改图**：不必手拖每一个节点，可以直接告诉 AI“我要怎样的流程”，让它生成初版流程图，或在已有流程上继续增删改。
+- **运行状态可视化**：测试或正式执行时，可以直观看到当前节点、条件分支、执行日志，便于排错、调优和复用。
+
 模型可调用的本机工具（节选）：
 
 | 分类 | 工具 |
@@ -273,13 +293,19 @@ npm --workspace @earendil-works/pi-desktop-assistant run test
 ```text
 Desktop_Assistant/
 ├─ start_desktop_assistant.py        # 启动器（装依赖/构建/启动）
+├─ CHANGELOG.md                      # 更新日志
 ├─ packages/
 │  ├─ desktop-assistant/             # ⭐ 桌面助手主包
-│  │  ├─ src/main/                   #   Electron 主进程 · IPC · 预加载
-│  │  ├─ src/agent/                  #   Agent 服务 · 记忆 · 归档 · Token 压缩
+│  │  ├─ src/main/                   #   Electron 主进程 · IPC · 预加载 · 外部应用控制器
+│  │  ├─ src/agent/                  #   Agent 服务 · 记忆 · 归档 · Token 压缩 · Live Flow
 │  │  ├─ src/voice/                  #   KWS 唤醒 · STT · 语音桥
 │  │  ├─ src/desktop/                #   自动化主机 · 沙箱 · 风险/调度
-│  │  ├─ renderer/src/               #   React 渲染端（chat/settings/pet/voice）
+│  │  ├─ renderer/src/               #   React 渲染端
+│  │  │  ├─ chat/                    #     对话 · 灵动窗 · 流程图气泡
+│  │  │  ├─ home/                    #     首页 · AI 欢迎语 · 天气
+│  │  │  ├─ memo/                    #     备忘录 · 待办
+│  │  │  ├─ automation/              #     自动化流程编辑器 · FlowGraph
+│  │  │  └─ more-apps/               #     更多应用平台入口
 │  │  ├─ mcp-servers/                #   内置 MCP：browser/steam/netease/forge
 │  │  ├─ skills/                     #   模型技能路由（SKILL.md）
 │  │  ├─ resources/kws/              #   离线唤醒模型（fetch:kws 拉取，不入库）

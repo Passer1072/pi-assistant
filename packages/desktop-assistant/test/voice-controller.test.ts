@@ -220,6 +220,9 @@ function createSnapshot(options: { wakeWordEnabled?: boolean } = {}): DesktopAss
 		messages: [],
 		timeline: [],
 		pendingConfirmations: [],
+		queuedPreInputs: [],
+		queuedSteeringMessages: [],
+		steeringLog: [],
 		voiceOverlay: {
 			visible: false,
 			state: "idle",

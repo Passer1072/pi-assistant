@@ -1,9 +1,14 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
+	DesktopAgentService,
 	isExternalBrowserControlToolName,
 	normalizeBrowserSettings,
 	normalizeSettings,
 } from "../src/agent/desktop-agent-service.ts";
+import { DryRunDesktopAutomationHost } from "../src/desktop/automation-host.ts";
 import { DEFAULT_DESKTOP_ASSISTANT_SETTINGS } from "../src/shared/types.ts";
 
 describe("isExternalBrowserControlToolName", () => {
@@ -108,5 +113,36 @@ describe("normalizeBrowserSettings", () => {
 		expect(normalizeBrowserSettings({ searchTemplate: "https://example.com/search" }).searchTemplate).toBe(d);
 		expect(normalizeBrowserSettings({ searchTemplate: "example.com/?q=%s" }).searchTemplate).toBe(d);
 		expect(normalizeBrowserSettings({ searchTemplate: 42 as never }).searchTemplate).toBe(d);
+	});
+});
+
+describe("browser settings persistence", () => {
+	it("loads persisted shortcuts after the service restarts", async () => {
+		const dir = mkdtempSync(join(tmpdir(), "desktop-browser-settings-"));
+		try {
+			const service = new DesktopAgentService({
+				cwd: process.cwd(),
+				agentDir: dir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+			await service.updateSettings({
+				browser: {
+					...service.snapshot().settings.browser,
+					shortcuts: [{ id: "custom-docs", label: "Docs", url: "example.com" }],
+				},
+			});
+
+			const restarted = new DesktopAgentService({
+				cwd: process.cwd(),
+				agentDir: dir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+
+			expect(restarted.snapshot().settings.browser.shortcuts).toEqual([
+				{ id: "custom-docs", label: "Docs", url: "https://example.com", iconUrl: undefined },
+			]);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
 	});
 });

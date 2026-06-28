@@ -26,6 +26,7 @@ function setup(defaultBrowser: BrowserTarget = "built_in") {
 		newTab: record("newTab"),
 		switchTab: record("switchTab"),
 		closeTab: record("closeTab"),
+		closeWindow: record("closeWindow"),
 		readPage: record("readPage"),
 		queryElements: record("queryElements"),
 		click: record("click"),
@@ -73,6 +74,18 @@ describe("browser tool routing", () => {
 		const { calls, run } = setup("built_in");
 		await run("browser_list_tabs", {});
 		expect(calls).toEqual([{ method: "listTabs", target: "built_in" }]);
+	});
+
+	it("closes the browser window through a dedicated tool instead of closing a tab", async () => {
+		const { calls, run } = setup("built_in");
+		await run("browser_close_window", {});
+		expect(calls).toEqual([{ method: "closeWindow", target: "built_in" }]);
+	});
+
+	it("always closes the built-in browser window even when the default browser is external", async () => {
+		const { calls, run } = setup("chrome");
+		await run("browser_close_window", {});
+		expect(calls).toEqual([{ method: "closeWindow", target: "built_in" }]);
 	});
 
 	it("reports tool failures as a failed result instead of throwing", async () => {

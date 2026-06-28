@@ -65,6 +65,7 @@ import type {
 	GlobalMemoryEntry,
 	GlobalMemoryListResponse,
 	GlobalMemoryUpdateRequest,
+	HomeWeatherView,
 	LoadConversationPageRequest,
 	LoadConversationPageResponse,
 	LogEntry,
@@ -78,13 +79,30 @@ import type {
 	MemoCreateRequest,
 	MemoDeleteRequest,
 	MemoItem,
+	MemoAttachment,
+	MemoAttachmentAddRequest,
+	MemoAttachmentRemoveRequest,
+	MemoBatchRequest,
+	MemoBatchResult,
+	MemoList,
+	MemoListCreateRequest,
+	MemoListDeleteRequest,
+	MemoListReorderRequest,
 	MemoListRequest,
 	MemoListResponse,
+	MemoListUpdateRequest,
+	MemoReorderRequest,
+	MemoRunAutoRequest,
 	MemoSetReminderRequest,
 	FileActionResponse,
 	FilePathRequest,
 	MemoSnoozeRequest,
+	MemoStatsResult,
 	MemoUpdateRequest,
+	ExternalAppConfig,
+	MoreAppEvent,
+	MoreAppTerminalResponse,
+	MoreAppView,
 	OpenBuiltInBrowserRequest,
 	OpenUrlInDefaultBrowserRequest,
 	PersonalSkillArchiveRequest,
@@ -97,6 +115,8 @@ import type {
 	PetDebugStateEvent,
 	PetDebugUpdateRequest,
 	PromptRequest,
+	QueuedPreInputRequest,
+	RefreshHomeWelcomeRequest,
 	ResumeConversationRequest,
 	SandboxCleanRequest,
 	SandboxCleanResponse,
@@ -132,6 +152,7 @@ import type {
 	WakeWordModelReadRequest,
 	WakeWordModelReadResponse,
 	WindowMode,
+	WithdrawQueuedPreInputResponse,
 } from "../../src/shared/types.ts";
 
 export type {
@@ -163,10 +184,14 @@ interface DesktopAssistantApi {
 	focusSession(request: FocusSessionRequest): Promise<DesktopAssistantSnapshot>;
 	closeSession(request: CloseSessionRequest): Promise<DesktopAssistantSnapshot>;
 	prompt(request: PromptRequest): Promise<DesktopAssistantSnapshot>;
+	deleteQueuedPreInput(request: QueuedPreInputRequest): Promise<DesktopAssistantSnapshot>;
+	withdrawQueuedPreInput(request: QueuedPreInputRequest): Promise<WithdrawQueuedPreInputResponse>;
 	abort(request?: AbortRequest): Promise<DesktopAssistantSnapshot>;
 	updateConversationThinking(request: ConversationThinkingUpdateRequest): Promise<DesktopAssistantSnapshot>;
 	updateApiKey(request: ApiKeyUpdateRequest): Promise<DesktopAssistantSnapshot>;
 	updateSettings(request: SettingsUpdateRequest): Promise<DesktopAssistantSnapshot>;
+	refreshHomeWelcome(request?: RefreshHomeWelcomeRequest): Promise<void>;
+	getHomeWeather(): Promise<HomeWeatherView | undefined>;
 	listMcpServers(): Promise<McpServerListResponse>;
 	upsertMcpServer(request: McpServerUpsertRequest): Promise<McpServerListResponse>;
 	deleteMcpServer(request: McpServerDeleteRequest): Promise<McpServerListResponse>;
@@ -218,10 +243,21 @@ interface DesktopAssistantApi {
 	listMemos(request?: MemoListRequest): Promise<MemoListResponse>;
 	createMemo(request: MemoCreateRequest): Promise<MemoItem>;
 	updateMemo(request: MemoUpdateRequest): Promise<MemoItem>;
+	reorderMemo(request: MemoReorderRequest): Promise<MemoItem[]>;
 	completeMemo(request: MemoCompleteRequest): Promise<MemoItem>;
 	snoozeMemo(request: MemoSnoozeRequest): Promise<MemoItem>;
 	setMemoReminder(request: MemoSetReminderRequest): Promise<MemoItem>;
+	runMemoAutoTaskNow(request: MemoRunAutoRequest): Promise<MemoItem>;
 	deleteMemo(request: MemoDeleteRequest): Promise<boolean>;
+	getMemoStats(): Promise<MemoStatsResult>;
+	batchMemos(request: MemoBatchRequest): Promise<MemoBatchResult>;
+	listMemoLists(): Promise<MemoList[]>;
+	createMemoList(request: MemoListCreateRequest): Promise<MemoList>;
+	updateMemoList(request: MemoListUpdateRequest): Promise<MemoList>;
+	reorderMemoList(request: MemoListReorderRequest): Promise<MemoList>;
+	deleteMemoList(request: MemoListDeleteRequest): Promise<boolean>;
+	addMemoAttachment(request: MemoAttachmentAddRequest): Promise<MemoAttachment>;
+	removeMemoAttachment(request: MemoAttachmentRemoveRequest): Promise<boolean>;
 	getAppLaunchCache(): Promise<AppLaunchCacheView>;
 	clearAppLaunchCache(): Promise<AppLaunchCacheView>;
 	deleteAppLaunchCacheEntry(request: DeleteAppLaunchCacheEntryRequest): Promise<AppLaunchCacheView>;
@@ -230,12 +266,21 @@ interface DesktopAssistantApi {
 	openPath(request: FilePathRequest): Promise<FileActionResponse>;
 	showItemInFolder(request: FilePathRequest): Promise<FileActionResponse>;
 	copyFileToClipboard(request: FilePathRequest): Promise<FileActionResponse>;
+	listMoreApps(): Promise<MoreAppView[]>;
+	startMoreApp(appId: string): Promise<MoreAppView[]>;
+	stopMoreApp(appId: string): Promise<MoreAppView[]>;
+	openMoreApp(appId: string): Promise<MoreAppView[]>;
+	openMoreAppAtPath(appId: string, path: string): Promise<MoreAppView[]>;
+	getMoreAppTerminal(appId: string): Promise<MoreAppTerminalResponse>;
+	updateMoreAppConfig(appId: string, config: ExternalAppConfig): Promise<MoreAppView[]>;
+	onMoreAppEvent(listener: (event: MoreAppEvent) => void): () => void;
 	openBuiltInBrowser(request?: OpenBuiltInBrowserRequest): Promise<BuiltInBrowserStatus>;
 	getBuiltInBrowserStatus(): Promise<BuiltInBrowserStatus>;
 	builtInBrowserNavigate(request: BrowserNavigateRequest): Promise<BuiltInBrowserStatus>;
 	builtInBrowserNewTab(request?: { url?: string }): Promise<BuiltInBrowserStatus>;
 	builtInBrowserSwitchTab(request: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
 	builtInBrowserCloseTab(request: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserCloseWindow(): Promise<{ ok: true; closed: boolean }>;
 	builtInBrowserGoBack(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
 	builtInBrowserGoForward(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
 	builtInBrowserReload(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;

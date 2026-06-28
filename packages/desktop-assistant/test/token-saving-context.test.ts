@@ -2,7 +2,7 @@ import type { AgentMessage } from "@earendil-works/pi-agent-core";
 import type { ToolResultMessage } from "@earendil-works/pi-ai";
 import { describe, expect, it } from "vitest";
 import { BrowserSnapshotStore } from "../src/agent/browser-snapshot-store.ts";
-import { compactTokenSavingMessages } from "../src/agent/token-saving-context.ts";
+import { applyFrozenFormsToMessages, compactTokenSavingMessages } from "../src/agent/token-saving-context.ts";
 import type { DesktopToolResult } from "../src/shared/types.ts";
 
 describe("token saving context transform", () => {
@@ -174,6 +174,77 @@ describe("token saving context transform", () => {
 		}
 		const noMemoSecond = compactTokenSavingMessages(flow, { snapshotStore: noMemoStore });
 		expect(JSON.stringify(noMemoSecond[0])).not.toBe(noMemoMessage0);
+	});
+});
+
+describe("B1: persisting browser compaction into retained state (applyFrozenFormsToMessages)", () => {
+	const makeMsg = (index: number): ToolResultMessage<DesktopToolResult> =>
+		browserToolResult(
+			browserReadPageDetails({
+				stepId: `step-${index}`,
+				stdout: JSON.stringify({
+					url: `https://example.test/${index}`,
+					title: `Page ${index}`,
+					text: `${index}-${"a".repeat(9000)}`,
+					html: `<main>${"b".repeat(9000)}</main>`,
+				}),
+			}),
+			`tool-${index}`,
+		);
+
+	it("rewrites only frozen (old) results in place, dropping the heavy payload from RAM", () => {
+		// Several large results: only the last fits the recent budget, the earlier
+		// ones leave the window and freeze.
+		const retained: AgentMessage[] = [makeMsg(0), makeMsg(1), makeMsg(2), makeMsg(3), makeMsg(4)];
+		const store = new BrowserSnapshotStore();
+		const frozenForms = new Map<string, AgentMessage>();
+
+		// The outbound transform runs first and populates the freeze memo.
+		compactTokenSavingMessages(retained, { snapshotStore: store, frozenForms });
+
+		const firstBefore = retained[0];
+		const last = retained.length - 1;
+		const lastBefore = retained[last];
+		const rewritten = applyFrozenFormsToMessages(retained, frozenForms);
+
+		// Every frozen (out-of-recent-window) result is rewritten, and nothing else.
+		expect(rewritten).toBe(frozenForms.size);
+		expect(rewritten).toBeGreaterThan(0);
+
+		// An early result was frozen: replaced in place, heavy payload dropped.
+		expect(retained[0]).not.toBe(firstBefore);
+		expect(JSON.stringify(retained[0])).not.toContain("a".repeat(9000)); // full text gone
+		expect(JSON.stringify(retained[0])).not.toContain("b".repeat(9000)); // full html gone
+		expect(JSON.stringify(retained[0])).toContain("snapshotId"); // reference kept
+
+		// The most recent result is never frozen — it stays full in the transcript.
+		expect(retained[last]).toBe(lastBefore);
+		expect(JSON.stringify(retained[last])).toContain("a".repeat(9000));
+	});
+
+	it("leaves the bytes sent to the model byte-identical after the write-back", () => {
+		const store = new BrowserSnapshotStore();
+		const frozenForms = new Map<string, AgentMessage>();
+
+		const original: AgentMessage[] = [makeMsg(0), makeMsg(1), makeMsg(2)];
+		// What the model receives this turn (outbound copy).
+		const sentBefore = JSON.stringify(compactTokenSavingMessages(original, { snapshotStore: store, frozenForms }));
+
+		// Persist the already-applied compaction back into the retained transcript.
+		applyFrozenFormsToMessages(original, frozenForms);
+
+		// Next turn's transform now runs over the shrunk retained state. The model
+		// must receive byte-identical context — this is the proof that B1 changes
+		// heap occupancy without changing model context memory.
+		const sentAfter = JSON.stringify(compactTokenSavingMessages(original, { snapshotStore: store, frozenForms }));
+
+		expect(sentAfter).toBe(sentBefore);
+	});
+
+	it("is a no-op when there are no frozen forms yet", () => {
+		const retained: AgentMessage[] = [makeMsg(0)];
+		expect(applyFrozenFormsToMessages(retained, new Map())).toBe(0);
+		expect(retained[0]).toBeDefined();
 	});
 });
 

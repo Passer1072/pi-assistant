@@ -35,9 +35,79 @@ describe("DeepSeek desktop defaults", () => {
 		expect(normalizeSettings({ tokenSaving: { enabled: true } }).tokenSaving.enabled).toBe(true);
 	});
 
+	it("defaults cross-conversation memory off for older settings", () => {
+		expect(normalizeSettings({}).memory).toEqual({
+			enabled: false,
+			maxInjected: 5,
+			autoExtract: false,
+			allowExternalContextExtraction: false,
+			allowAssistantDerivedFacts: false,
+		});
+	});
+
+	it("normalizes and preserves explicit memory settings", () => {
+		expect(
+			normalizeSettings({
+				memory: {
+					enabled: true,
+					maxInjected: 99,
+					autoExtract: true,
+					allowExternalContextExtraction: true,
+					allowAssistantDerivedFacts: true,
+				},
+			}).memory,
+		).toEqual({
+			enabled: true,
+			maxInjected: 20,
+			autoExtract: true,
+			allowExternalContextExtraction: true,
+			allowAssistantDerivedFacts: true,
+		});
+	});
+
 	it("defaults auto title generation on for older settings", () => {
 		expect(normalizeSettings({}).autoTitle.enabled).toBe(true);
 		expect(normalizeSettings({ autoTitle: { enabled: false } }).autoTitle.enabled).toBe(false);
+	});
+
+	it("defaults the error-self-summary experiment off for older settings", () => {
+		expect(normalizeSettings({}).experimental.errorSelfSummary.enabled).toBe(false);
+		expect(
+			normalizeSettings({
+				experimental: { errorSelfSummary: { enabled: true }, liveFlow: { enabled: false } },
+			}).experimental.errorSelfSummary.enabled,
+		).toBe(true);
+	});
+
+	it("persists experimental settings across service restarts", async () => {
+		const agentDir = mkdtempSync(join(tmpdir(), "desktop-assistant-experimental-"));
+		try {
+			const service = new DesktopAgentService({
+				cwd: process.cwd(),
+				agentDir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+
+			await service.updateSettings({
+				experimental: {
+					errorSelfSummary: { enabled: true },
+					liveFlow: { enabled: true },
+				},
+			});
+
+			const restarted = new DesktopAgentService({
+				cwd: process.cwd(),
+				agentDir,
+				host: new DryRunDesktopAutomationHost(),
+			});
+
+			expect(restarted.snapshot().settings.experimental).toEqual({
+				errorSelfSummary: { enabled: true },
+				liveFlow: { enabled: true },
+			});
+		} finally {
+			rmSync(agentDir, { recursive: true, force: true });
+		}
 	});
 
 	it("defaults older settings to official API connection", () => {

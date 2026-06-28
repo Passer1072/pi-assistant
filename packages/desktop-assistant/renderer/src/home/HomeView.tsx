@@ -2,17 +2,33 @@ import {
 	BellRing,
 	Check,
 	ChevronRight,
+	Cloud,
+	CloudDrizzle,
+	CloudFog,
+	CloudLightning,
+	CloudMoon,
+	CloudOff,
+	CloudRain,
+	CloudSnow,
+	CloudSun,
+	Droplets,
 	FileText,
+	Loader2,
+	MapPin,
 	MessageSquarePlus,
 	Mic,
+	Moon,
 	Send,
 	Settings as SettingsIcon,
 	Sparkles,
+	Sun,
+	Wind,
 	X,
 } from "lucide-react";
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
 	DesktopAssistantSnapshot,
+	HomeWeatherView,
 	MemoItem,
 	PendingPromptAttachment,
 	WakeWordModelMetadata,
@@ -33,6 +49,147 @@ const SUGGESTIONS = [
 	"打开网易云音乐播放我的歌单",
 	"总结一下我桌面上的这份文档",
 ];
+
+/** Map a WeatherAPI.com condition code (+ day/night) to a lucide icon, so the widget matches the app's icon set. */
+function weatherIcon(code: number | undefined, isDay: boolean) {
+	const props = { size: 34, className: "home-weather-icon", "aria-hidden": true } as const;
+	switch (code) {
+		case 1000: // sunny / clear
+			return isDay ? <Sun {...props} /> : <Moon {...props} />;
+		case 1003: // partly cloudy
+			return isDay ? <CloudSun {...props} /> : <CloudMoon {...props} />;
+		case 1006: // cloudy
+		case 1009: // overcast
+			return <Cloud {...props} />;
+		case 1030: // mist
+		case 1135: // fog
+		case 1147: // freezing fog
+			return <CloudFog {...props} />;
+		case 1063: // patchy rain
+		case 1150: // patchy light drizzle
+		case 1153: // light drizzle
+		case 1180: // patchy light rain
+		case 1183: // light rain
+		case 1240: // light rain shower
+			return <CloudDrizzle {...props} />;
+		case 1186: // moderate rain
+		case 1189:
+		case 1192: // heavy rain
+		case 1195:
+		case 1243: // moderate/heavy rain shower
+		case 1246:
+			return <CloudRain {...props} />;
+		case 1087: // thundery outbreaks
+		case 1273: // patchy light rain w/ thunder
+		case 1276: // moderate/heavy rain w/ thunder
+			return <CloudLightning {...props} />;
+		case 1066: // patchy snow
+		case 1114: // blowing snow
+		case 1210: // patchy light snow
+		case 1213: // light snow
+		case 1216: // patchy moderate snow
+		case 1219: // moderate snow
+		case 1222: // patchy heavy snow
+		case 1225: // heavy snow
+		case 1255: // light snow showers
+		case 1258: // moderate/heavy snow showers
+			return <CloudSnow {...props} />;
+		default:
+			return <Cloud {...props} />;
+	}
+}
+
+/**
+ * Weather card for the home hero. Pulls structured weather via IPC (2h main-process cache),
+ * refreshes every 30 min. Renders nothing when no WeatherAPI key is configured, and degrades
+ * silently to a muted "unavailable" pill on fetch failure.
+ */
+function HomeWeatherWidget() {
+	const [weather, setWeather] = useState<HomeWeatherView | null>(null);
+	const [status, setStatus] = useState<"loading" | "ready" | "error" | "absent">("loading");
+
+	const load = useCallback(async () => {
+		if (!window.desktopAssistant?.getHomeWeather) {
+			setStatus("absent");
+			return;
+		}
+		setStatus((prev) => (prev === "ready" ? prev : "loading"));
+		try {
+			const result = await window.desktopAssistant.getHomeWeather();
+			if (result) {
+				setWeather(result);
+				setStatus("ready");
+			} else {
+				setStatus("absent");
+			}
+		} catch {
+			setStatus("error");
+		}
+	}, []);
+
+	useEffect(() => {
+		void load();
+		const timer = window.setInterval(() => void load(), 30 * 60 * 1000);
+		return () => window.clearInterval(timer);
+	}, [load]);
+
+	if (status === "absent") return null;
+
+	if (status === "loading") {
+		return (
+			<div className="home-weather is-muted" aria-live="polite">
+				<Loader2 size={15} className="home-weather-spin" aria-hidden />
+				<span>天气加载中…</span>
+			</div>
+		);
+	}
+
+	if (status === "error" || !weather) {
+		return (
+			<button type="button" className="home-weather is-muted is-button" onClick={() => void load()}>
+				<CloudOff size={15} aria-hidden />
+				<span>天气暂不可用 · 点击重试</span>
+			</button>
+		);
+	}
+
+	const { city, tempC, feelsLikeC, conditionText, conditionCode, isDay, humidity, windKph } = weather;
+	const updatedLabel = `更新于 ${new Date(weather.fetchedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`;
+	return (
+		<div className="home-weather" title={updatedLabel}>
+			<div className="home-weather-main">
+				{weatherIcon(conditionCode, isDay)}
+				<div className="home-weather-readout">
+					<div className="home-weather-temp">{Math.round(tempC)}°</div>
+					<div className="home-weather-cond">
+						{conditionText ?? "—"}
+						{feelsLikeC !== undefined ? ` · 体感 ${Math.round(feelsLikeC)}°` : ""}
+					</div>
+				</div>
+			</div>
+			{city ? (
+				<div className="home-weather-city">
+					<MapPin size={13} aria-hidden />
+					<span className="home-weather-city-name">{city}</span>
+				</div>
+			) : null}
+			{humidity !== undefined || windKph !== undefined ? (
+				<div className="home-weather-detail">
+					{humidity !== undefined ? (
+						<span>
+							<Droplets size={13} aria-hidden /> 湿度 {humidity}%
+						</span>
+					) : null}
+					{windKph !== undefined ? (
+						<span>
+							<Wind size={13} aria-hidden /> {Math.round(windKph)} km/h
+						</span>
+					) : null}
+				</div>
+			) : null}
+		</div>
+	);
+}
 
 interface HomeViewProps {
 	snapshot: DesktopAssistantSnapshot;
@@ -104,6 +261,69 @@ function voiceComposerClass(state: DesktopAssistantSnapshot["voiceOverlay"]["sta
 	return "";
 }
 
+// Shown the instant the home page mounts; the AI greeting fake-types in over it.
+const HOME_WELCOME_PLACEHOLDER = "HELLO";
+const TYPEWRITER_DELETE_MS = 26;
+const TYPEWRITER_TYPE_MS = 55;
+
+function prefersReducedMotion(): boolean {
+	return typeof window !== "undefined" && window.matchMedia?.("(prefers-reduced-motion: reduce)").matches === true;
+}
+
+/** Split the welcome into a title (first line) and an overview body (the rest). */
+function splitHomeWelcome(text: string): { title: string; body: string } {
+	const newline = text.indexOf("\n");
+	if (newline >= 0) return { title: text.slice(0, newline), body: text.slice(newline + 1) };
+	return { title: text, body: "" };
+}
+
+/**
+ * Drives a "fake input" replacement: whenever `target` changes, backspace-delete the
+ * current text down to empty, then type the new text out one character at a time. The
+ * initial value renders instantly (no animation) so the hero is never blank. Honors
+ * prefers-reduced-motion by snapping straight to the target.
+ */
+function useTypewriter(target: string): string {
+	const [display, setDisplay] = useState(target);
+	const displayRef = useRef(target);
+	const targetRef = useRef(target);
+
+	useEffect(() => {
+		if (target === targetRef.current) return undefined;
+		targetRef.current = target;
+		if (prefersReducedMotion()) {
+			displayRef.current = target;
+			setDisplay(target);
+			return undefined;
+		}
+		const targetChars = Array.from(target);
+		let timer = 0;
+		const step = () => {
+			const current = Array.from(displayRef.current);
+			let next: string;
+			let delay: number;
+			if (current.length > 0) {
+				// Phase 1: backspace the previous text away, character by character.
+				next = current.slice(0, -1).join("");
+				delay = TYPEWRITER_DELETE_MS;
+			} else if (current.length < targetChars.length) {
+				// Phase 2: type the new text in, character by character.
+				next = targetChars.slice(0, current.length + 1).join("");
+				delay = TYPEWRITER_TYPE_MS;
+			} else {
+				return;
+			}
+			displayRef.current = next;
+			setDisplay(next);
+			timer = window.setTimeout(step, delay);
+		};
+		step();
+		return () => window.clearTimeout(timer);
+	}, [target]);
+
+	return display;
+}
+
 export function HomeView({
 	snapshot,
 	homeConversationActive,
@@ -129,6 +349,11 @@ export function HomeView({
 	const [expanding, setExpanding] = useState(false);
 	const [cardsH, setCardsH] = useState(150);
 	const now = useMemo(() => new Date(), []);
+	const welcomeEnabled = snapshot.settings.homeWelcome?.enabled ?? true;
+	const welcomeText = useTypewriter(
+		welcomeEnabled ? (snapshot.homeWelcome?.text ?? HOME_WELCOME_PLACEHOLDER) : HOME_WELCOME_PLACEHOLDER,
+	);
+	const { title: welcomeTitle, body: welcomeBody } = splitHomeWelcome(welcomeText);
 	const summary = snapshot.memoSummary;
 	const memoBadge = (summary?.overdueCount ?? 0) + (summary?.dueTodayCount ?? 0);
 	const todayMemos: MemoItem[] = useMemo(
@@ -264,12 +489,32 @@ export function HomeView({
 				    voice conversation begins — the inline thread dissolves under it. */}
 				<div className={`home-live-top ${hasConvo ? "with-convo" : ""}`} ref={topRef}>
 					<header className="home-hero">
-						<div className="home-greeting">
-							<span className="home-greeting-main">{greeting(now)}</span>
-							<span className="home-greeting-wave">👋</span>
+						<div className="home-hero-text">
+							{welcomeEnabled ? (
+								<div className="home-welcome">
+									<div className="home-welcome-line title">
+										<span className="home-welcome-title">{welcomeTitle}</span>
+										{welcomeBody ? null : <span className="home-welcome-caret" aria-hidden />}
+									</div>
+									{welcomeBody ? (
+										<div className="home-welcome-line sub">
+											<span className="home-welcome-sub">{welcomeBody}</span>
+											<span className="home-welcome-caret" aria-hidden />
+										</div>
+									) : null}
+								</div>
+							) : (
+								<>
+									<div className="home-greeting">
+										<span className="home-greeting-main">{greeting(now)}</span>
+										<span className="home-greeting-wave">👋</span>
+									</div>
+									<p className="home-tagline">我是小派，你的桌面 AI 伙伴。说出你想做的，我来处理。</p>
+								</>
+							)}
+							<p className="home-date">{formatToday(now)}</p>
 						</div>
-						<p className="home-tagline">我是小派，你的桌面 AI 伙伴。说出你想做的，我来处理。</p>
-						<p className="home-date">{formatToday(now)}</p>
+						<HomeWeatherWidget />
 					</header>
 
 					<section className="home-reminders">

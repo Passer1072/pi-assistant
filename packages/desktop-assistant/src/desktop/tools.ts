@@ -277,6 +277,7 @@ export function getActiveDesktopToolNames(
 			"shell_command_safe",
 			"shell_command_continue",
 			"shell_command_abort",
+			"wait",
 			"get_screen_context",
 			"sandbox_status",
 			"sandbox_init",
@@ -323,6 +324,7 @@ export function createDesktopToolDefinitions(options: DesktopToolOptions): ToolD
 		createSafeShellTool(options),
 		createShellContinueTool(options),
 		createShellAbortTool(options),
+		createWaitTool(options),
 		createScreenContextTool(options),
 		// Sandbox workspace tools
 		createSandboxStatusTool(options),
@@ -442,6 +444,15 @@ const shellAbortSchema = Type.Object({
 	executionId: Type.String({
 		description: "The executionId of the still-running process to terminate immediately.",
 	}),
+});
+
+const waitSchema = Type.Object({
+	seconds: Type.Number({
+		minimum: 1,
+		maximum: 120,
+		description: "How many seconds to pause before the next status check. Range: 1-120.",
+	}),
+	reason: Type.Optional(Type.String({ description: "Optional short reason for the wait." })),
 });
 
 const desktopObserveSchema = Type.Object({});
@@ -1404,6 +1415,38 @@ function createShellAbortTool(options: DesktopToolOptions): ToolDefinition {
 	});
 }
 
+function createWaitTool(_options: DesktopToolOptions): ToolDefinition {
+	return defineTool({
+		name: "wait",
+		label: "Wait",
+		description:
+			"Pause server-side for a bounded number of seconds before checking a long-running task again. This costs no model turns while waiting and can be cancelled.",
+		promptSnippet: "Wait before rechecking long-running tasks when no blocking status tool is available.",
+		promptGuidelines: [
+			"Use wait before rechecking background jobs, loading apps, browser pages, sandbox initialization, or MCP tools that ask you to retry later.",
+			"Prefer a tool's own waitForChange or blocking status parameter when available; use wait as the generic fallback.",
+			"Do not send a user-facing progress update for every wait/check cycle; report only meaningful progress, completion, or errors.",
+		],
+		parameters: waitSchema,
+		execute: async (_toolCallId, params, signal) => {
+			const seconds = Math.min(120, Math.max(1, Math.ceil(params.seconds)));
+			await wait(seconds * 1000, signal);
+			const payload = { waited: seconds, reason: params.reason };
+			const details: DesktopToolResult = {
+				stepId: randomUUID(),
+				intent: "Wait",
+				action: "wait",
+				target: params.reason ?? `${seconds}s`,
+				status: "succeeded",
+				stdout: JSON.stringify(payload),
+				riskLevel: "low",
+				requiresConfirmation: false,
+			};
+			return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+		},
+	});
+}
+
 function createDesktopObserveTool(options: DesktopToolOptions): ToolDefinition {
 	return defineTool({
 		name: "desktop_observe",
@@ -1612,8 +1655,24 @@ function containsLoose(haystack: string, needle: string): boolean {
 	return !!compactNeedle && compactHaystack.includes(compactNeedle);
 }
 
-function wait(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
+function wait(ms: number, signal?: AbortSignal): Promise<void> {
+	if (signal?.aborted) return Promise.reject(new Error("Aborted"));
+	return new Promise((resolve, reject) => {
+		let timeout: ReturnType<typeof setTimeout> | undefined;
+		const onAbort = () => {
+			finish();
+			reject(new Error("Aborted"));
+		};
+		const finish = () => {
+			if (timeout) clearTimeout(timeout);
+			signal?.removeEventListener("abort", onAbort);
+		};
+		timeout = setTimeout(() => {
+			finish();
+			resolve();
+		}, ms);
+		signal?.addEventListener("abort", onAbort, { once: true });
+	});
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1808,7 +1867,7 @@ const excelWriteSchema = Type.Object({
 const officeExcelRunSchema = Type.Object({
 	script: Type.String({
 		description:
-			"PowerShell script body. $Excel (Excel.Application, Visible=false) is already created. Do NOT call $Excel.Quit().",
+			"PowerShell script body. $Excel (Excel.Application, Visible=false) is already created. Do NOT call $Excel.Quit(). When writing numbers, prefer $ws.Cells.Item(row,col) = 123 or explicit casts such as $cell.Value = [double]$n; avoid raw .Value2 = [int].",
 	}),
 });
 
@@ -2594,7 +2653,16 @@ function wrapExcelCom(innerScript: string): string {
 		`$Excel.Visible = $false; $Excel.DisplayAlerts = $false`,
 		`try {`,
 		innerScript,
-		`} catch { Write-Error "Excel error: $_"; exit 1 }`,
+		`} catch {`,
+		`  $err = $_`,
+		`  $ex = $err.Exception`,
+		`  $line = $err.InvocationInfo.ScriptLineNumber`,
+		`  $pos = $err.InvocationInfo.OffsetInLine`,
+		`  $cmd = $err.InvocationInfo.Line`,
+		`  if ($null -eq $cmd) { $cmd = '' }`,
+		`  Write-Error ("Excel error ({0}): {1}\`nAt line {2}, char {3}\`n{4}" -f $ex.GetType().FullName, $ex.Message, $line, $pos, $cmd)`,
+		`  exit 1`,
+		`}`,
 		`finally {`,
 		`  if ($createdByAgent) {`,
 		`    try { $Excel.Quit() } catch {}`,
@@ -2656,6 +2724,7 @@ const OFFICE_EXCEL_GUIDELINES = [
 	"Use excel_read to inspect data, headers, or formulas from an existing .xlsx.",
 	"Use excel_write to bulk-write rows of data (new file or append/overwrite to existing).",
 	"Use office_excel_run for advanced operations: formulas, charts, formatting, pivot tables, CSV import/export.",
+	"When office_excel_run writes numbers, prefer $ws.Cells.Item(row,col) = 123 or explicit casts like $cell.Value = [double]$n; avoid raw .Value2 = [int].",
 	"Office tools manage the Excel application lifecycle automatically. If Excel was already open, reuse it and do not quit it. If the tool created Excel, it will close that instance after the task finishes.",
 	"When writing an office_excel_run script, close only the workbooks you opened. Do not call $Excel.Quit() inside the user script.",
 	"Microsoft Excel must be installed. If Excel is unavailable, tell the user and suggest installing Microsoft Office.",
@@ -2969,6 +3038,26 @@ function createExcelWriteTool(options: DesktopToolOptions): ToolDefinition {
 			const inner = [
 				`$data = [System.Text.Encoding]::UTF8.GetString([System.Convert]::FromBase64String('${dataB64}')) | ConvertFrom-Json`,
 				`$path = '${pathEsc}'`,
+				`function Set-ExcelCellValue($cell, $value) {`,
+				`  if ($null -eq $value) { return }`,
+				`  $typeCode = [System.Type]::GetTypeCode($value.GetType())`,
+				`  switch ($typeCode) {`,
+				`    'Boolean' { $cell.Value = [bool]$value; return }`,
+				`    'Byte' { $cell.Value = [double]$value; return }`,
+				`    'SByte' { $cell.Value = [double]$value; return }`,
+				`    'Int16' { $cell.Value = [double]$value; return }`,
+				`    'UInt16' { $cell.Value = [double]$value; return }`,
+				`    'Int32' { $cell.Value = [double]$value; return }`,
+				`    'UInt32' { $cell.Value = [double]$value; return }`,
+				`    'Int64' { $cell.Value = [double]$value; return }`,
+				`    'UInt64' { $cell.Value = [double]$value; return }`,
+				`    'Single' { $cell.Value = [double]$value; return }`,
+				`    'Double' { $cell.Value = [double]$value; return }`,
+				`    'Decimal' { $cell.Value = [double]$value; return }`,
+				`    'String' { $cell.Value2 = [string]$value; return }`,
+				`    default { $cell.Value2 = [string]$value; return }`,
+				`  }`,
+				`}`,
 				`if (Test-Path $path) { $wb = $Excel.Workbooks.Open($path) } else { $wb = $Excel.Workbooks.Add() }`,
 				`$ws = $wb.Sheets.Item(${sheetRef})`,
 				`if (${clearSheet ? "$true" : "$false"}) { $ws.UsedRange.Clear() }`,
@@ -2976,7 +3065,7 @@ function createExcelWriteTool(options: DesktopToolOptions): ToolDefinition {
 				`foreach ($rowData in $data) {`,
 				`  $col = ${startCol}`,
 				`  foreach ($val in $rowData) {`,
-				`    if ($null -ne $val) { $ws.Cells.Item($row, $col).Value2 = $val }`,
+				`    if ($null -ne $val) { Set-ExcelCellValue ($ws.Cells.Item($row, $col)) $val }`,
 				`    $col++`,
 				`  }`,
 				`  $row++`,

@@ -3,13 +3,23 @@ import { defineTool, type ToolDefinition } from "@earendil-works/pi-coding-agent
 import { Type } from "typebox";
 import type {
 	DesktopToolResult,
+	MemoAttachment,
+	MemoAttachmentAddRequest,
+	MemoAttachmentRemoveRequest,
+	MemoBatchRequest,
+	MemoBatchResult,
 	MemoCompleteRequest,
 	MemoCreateRequest,
 	MemoDeleteRequest,
 	MemoItem,
+	MemoList,
+	MemoListCreateRequest,
+	MemoListDeleteRequest,
 	MemoListRequest,
 	MemoListResponse,
+	MemoListUpdateRequest,
 	MemoSetReminderRequest,
+	MemoStatsResult,
 	MemoUpdateRequest,
 } from "../shared/types.ts";
 
@@ -26,6 +36,14 @@ export interface MemoToolHost {
 	setMemoReminder(request: MemoSetReminderRequest): MemoItem;
 	listMemos(request?: MemoListRequest): MemoListResponse;
 	searchMemos(query: string, limit?: number): MemoItem[];
+	getMemoStats(): MemoStatsResult;
+	batchMemos(request: MemoBatchRequest): MemoBatchResult;
+	listMemoLists(): MemoList[];
+	createMemoList(request: MemoListCreateRequest): MemoList;
+	updateMemoList(request: MemoListUpdateRequest): MemoList;
+	deleteMemoList(request: MemoListDeleteRequest): boolean;
+	addMemoAttachment(request: MemoAttachmentAddRequest): MemoAttachment;
+	removeMemoAttachment(request: MemoAttachmentRemoveRequest): boolean;
 	getSourceSessionId(): string | undefined;
 }
 
@@ -37,6 +55,14 @@ export const MEMO_TOOL_NAMES = [
 	"memo_complete",
 	"memo_set_reminder",
 	"memo_delete",
+	"memo_stats",
+	"memo_batch",
+	"memo_list_list",
+	"memo_list_create",
+	"memo_list_update",
+	"memo_list_delete",
+	"memo_attachment_add",
+	"memo_attachment_remove",
 ] as const;
 
 const PRIORITY_ENUM = Type.Union([
@@ -51,11 +77,28 @@ const RECURRENCE_ENUM = Type.Union([
 	Type.Literal("weekly"),
 	Type.Literal("monthly"),
 ]);
+const MEMO_SORT_ENUM = Type.Union([
+	Type.Literal("due"),
+	Type.Literal("priority"),
+	Type.Literal("created"),
+	Type.Literal("manual"),
+	Type.Literal("reminderAt"),
+]);
+const MEMO_BATCH_ACTION_ENUM = Type.Union([
+	Type.Literal("complete"),
+	Type.Literal("delete"),
+	Type.Literal("archive"),
+	Type.Literal("setTags"),
+	Type.Literal("setPriority"),
+	Type.Literal("setListId"),
+]);
 
 const MEMO_GUIDELINES = [
 	"备忘录是用户的待办/提醒事项。仅在用户明确要求记录待办、设置提醒或查询待办时使用这些工具。",
-	"日期时间必须传 ISO 8601（如 2026-06-20T09:00:00）。先把『明天9点』『30分钟后』『下周一』等相对/口语时间换算成绝对 ISO 时间再调用——以当前本地时间为基准。",
+	"日期时间必须传 ISO 8601（如 2026-06-20T09:00:00）。先把『明天9点』『30分钟后』『下周一』等相对/口语时间换算成绝对 ISO 时间再调用，以当前本地时间为基准。",
 	"reminderAt 是提醒触发时间，dueAt 是截止时间，二者可不同（例如截止前一天提醒）。只设提醒就传 reminderAt。",
+	"只有在用户明确要求到点自动执行/自动让 AI 处理/定时运行时，才设置 autoRunAtReminder=true；普通『提醒我』只创建提醒，不自动执行。",
+	"autoRunAtReminder=true 必须同时提供有效 reminderAt；autoRunPrompt 是到提醒时间时交给 AI 自动执行的指令，省略时使用标题和备注作为任务内容。",
 	"创建后向用户复述标题与提醒时间确认。除非用户明确要删除，否则用 memo_complete 标记完成而不是 memo_delete。",
 ];
 
@@ -77,10 +120,17 @@ export function createMemoToolDefinitions(host: MemoToolHost): ToolDefinition[] 
 				recurrence: Type.Optional(RECURRENCE_ENUM),
 				tags: Type.Optional(Type.Array(Type.String())),
 				subtasks: Type.Optional(Type.Array(Type.String({ description: "Subtask title." }))),
+				listId: Type.Optional(Type.String({ description: "Memo list/project id." })),
+				progress: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+				autoRunAtReminder: Type.Optional(
+					Type.Boolean({ description: "If true, run AI automatically when reminderAt fires on time." }),
+				),
+				autoRunPrompt: Type.Optional(Type.String({ description: "Optional prompt for the scheduled AI run." })),
 			}),
 			execute: async (_id, params) =>
-				memoResult("Create memo", "memo_create", params.title, () =>
-					host.createMemo({
+				memoResult("Create memo", "memo_create", params.title, () => {
+					assertAutoRunHasReminder(params.autoRunAtReminder, params.reminderAt);
+					return host.createMemo({
 						title: params.title,
 						notes: params.notes,
 						priority: params.priority,
@@ -89,10 +139,14 @@ export function createMemoToolDefinitions(host: MemoToolHost): ToolDefinition[] 
 						recurrence: params.recurrence,
 						tags: params.tags,
 						subtasks: params.subtasks?.map((title) => ({ title })),
+						listId: params.listId,
+						progress: params.progress,
+						autoRunAtReminder: params.autoRunAtReminder,
+						autoRunPrompt: params.autoRunPrompt,
 						createdBy: "ai",
 						sourceSessionId: host.getSourceSessionId(),
-					}),
-				),
+					});
+				}),
 		}),
 		defineTool({
 			name: "memo_list",
@@ -106,18 +160,18 @@ export function createMemoToolDefinitions(host: MemoToolHost): ToolDefinition[] 
 				),
 				tag: Type.Optional(Type.String()),
 				query: Type.Optional(Type.String({ description: "Free-text filter." })),
-				sort: Type.Optional(
-					Type.Union([
-						Type.Literal("due"),
-						Type.Literal("priority"),
-						Type.Literal("created"),
-						Type.Literal("manual"),
-					]),
-				),
+				sort: Type.Optional(MEMO_SORT_ENUM),
+				listId: Type.Optional(Type.String({ description: "Filter by memo list/project id." })),
 			}),
 			execute: async (_id, params) =>
 				memoResult("List memos", "memo_list", params.status ?? "active", () =>
-					host.listMemos({ status: params.status, tag: params.tag, query: params.query, sort: params.sort }),
+					host.listMemos({
+						status: params.status,
+						tag: params.tag,
+						query: params.query,
+						sort: params.sort,
+						listId: params.listId,
+					}),
 				),
 		}),
 		defineTool({
@@ -148,21 +202,40 @@ export function createMemoToolDefinitions(host: MemoToolHost): ToolDefinition[] 
 				reminderAt: Type.Optional(Type.String({ description: "ISO 8601, or empty string to clear." })),
 				recurrence: Type.Optional(RECURRENCE_ENUM),
 				tags: Type.Optional(Type.Array(Type.String())),
+				listId: Type.Optional(Type.String({ description: "Memo list/project id, or empty string to clear." })),
+				progress: Type.Optional(Type.Number({ minimum: 0, maximum: 100 })),
+				autoRunAtReminder: Type.Optional(
+					Type.Boolean({ description: "If true, run AI automatically when reminderAt fires on time." }),
+				),
+				autoRunPrompt: Type.Optional(Type.String({ description: "Optional prompt, or empty string to clear." })),
 			}),
 			execute: async (_id, params) =>
-				memoResult("Update memo", "memo_update", params.id, () =>
-					host.updateMemo({
+				memoResult("Update memo", "memo_update", params.id, () => {
+					const reminderAt =
+						params.reminderAt === undefined ? undefined : params.reminderAt === "" ? null : params.reminderAt;
+					if (reminderAt !== undefined) {
+						assertAutoRunHasReminder(params.autoRunAtReminder, reminderAt);
+					}
+					return host.updateMemo({
 						id: params.id,
 						title: params.title,
 						notes: params.notes,
 						priority: params.priority,
 						dueAt: params.dueAt === undefined ? undefined : params.dueAt === "" ? null : params.dueAt,
-						reminderAt:
-							params.reminderAt === undefined ? undefined : params.reminderAt === "" ? null : params.reminderAt,
+						reminderAt,
 						recurrence: params.recurrence,
 						tags: params.tags,
-					}),
-				),
+						listId: params.listId === undefined ? undefined : params.listId === "" ? null : params.listId,
+						progress: params.progress,
+						autoRunAtReminder: params.autoRunAtReminder,
+						autoRunPrompt:
+							params.autoRunPrompt === undefined
+								? undefined
+								: params.autoRunPrompt === ""
+									? null
+									: params.autoRunPrompt,
+					});
+				}),
 		}),
 		defineTool({
 			name: "memo_complete",
@@ -189,11 +262,27 @@ export function createMemoToolDefinitions(host: MemoToolHost): ToolDefinition[] 
 			parameters: Type.Object({
 				id: Type.String(),
 				reminderAt: Type.String({ description: "Reminder time ISO 8601, or empty string to clear it." }),
+				autoRunAtReminder: Type.Optional(
+					Type.Boolean({ description: "If true, run AI automatically when this reminder fires on time." }),
+				),
+				autoRunPrompt: Type.Optional(Type.String({ description: "Optional prompt, or empty string to clear." })),
 			}),
 			execute: async (_id, params) =>
-				memoResult("Set memo reminder", "memo_set_reminder", params.id, () =>
-					host.setMemoReminder({ id: params.id, reminderAt: params.reminderAt === "" ? null : params.reminderAt }),
-				),
+				memoResult("Set memo reminder", "memo_set_reminder", params.id, () => {
+					const reminderAt = params.reminderAt === "" ? null : params.reminderAt;
+					assertAutoRunHasReminder(params.autoRunAtReminder, reminderAt);
+					return host.setMemoReminder({
+						id: params.id,
+						reminderAt,
+						autoRunAtReminder: params.autoRunAtReminder,
+						autoRunPrompt:
+							params.autoRunPrompt === undefined
+								? undefined
+								: params.autoRunPrompt === ""
+									? null
+									: params.autoRunPrompt,
+					});
+				}),
 		}),
 		defineTool({
 			name: "memo_delete",
@@ -205,6 +294,138 @@ export function createMemoToolDefinitions(host: MemoToolHost): ToolDefinition[] 
 			execute: async (_id, params) =>
 				memoResult("Delete memo", "memo_delete", params.id, () => ({
 					deleted: host.deleteMemo({ id: params.id }),
+				})),
+		}),
+		defineTool({
+			name: "memo_stats",
+			label: "Memo stats",
+			description: "Return aggregate statistics for the user's memos / to-dos.",
+			promptSnippet:
+				"Use when the user asks for memo counts, overdue items, completion rate, or priority distribution.",
+			promptGuidelines: MEMO_GUIDELINES,
+			parameters: Type.Object({}),
+			execute: async () => memoResult("Memo stats", "memo_stats", "all", () => host.getMemoStats()),
+		}),
+		defineTool({
+			name: "memo_batch",
+			label: "Batch memo operation",
+			description: "Run a batch operation on multiple memo ids.",
+			promptSnippet: "Use for bulk completing, archiving, deleting, tagging, reprioritizing, or moving memos.",
+			promptGuidelines: MEMO_GUIDELINES,
+			parameters: Type.Object({
+				ids: Type.Array(Type.String()),
+				action: MEMO_BATCH_ACTION_ENUM,
+				tags: Type.Optional(Type.Array(Type.String())),
+				priority: Type.Optional(PRIORITY_ENUM),
+				listId: Type.Optional(Type.String({ description: "List id, or empty string to clear." })),
+			}),
+			execute: async (_id, params) =>
+				memoResult("Batch memos", "memo_batch", params.ids.join(","), () =>
+					host.batchMemos({
+						ids: params.ids,
+						action: params.action,
+						tags: params.tags,
+						priority: params.priority,
+						listId: params.listId,
+					}),
+				),
+		}),
+		defineTool({
+			name: "memo_list_list",
+			label: "List memo lists",
+			description: "List all memo lists / projects.",
+			promptSnippet: "Use when the user asks what memo lists or projects exist.",
+			promptGuidelines: MEMO_GUIDELINES,
+			parameters: Type.Object({}),
+			execute: async () => memoResult("List memo lists", "memo_list_list", "lists", () => host.listMemoLists()),
+		}),
+		defineTool({
+			name: "memo_list_create",
+			label: "Create memo list",
+			description: "Create a memo list / project.",
+			promptSnippet: "Use when the user wants a new memo list or project.",
+			promptGuidelines: MEMO_GUIDELINES,
+			parameters: Type.Object({
+				name: Type.String(),
+				color: Type.Optional(Type.String()),
+				icon: Type.Optional(Type.String()),
+			}),
+			execute: async (_id, params) =>
+				memoResult("Create memo list", "memo_list_create", params.name, () =>
+					host.createMemoList({ name: params.name, color: params.color, icon: params.icon }),
+				),
+		}),
+		defineTool({
+			name: "memo_list_update",
+			label: "Update memo list",
+			description: "Update a memo list / project by id.",
+			promptSnippet: "Use when the user wants to rename or recolor a memo list.",
+			promptGuidelines: MEMO_GUIDELINES,
+			parameters: Type.Object({
+				id: Type.String(),
+				name: Type.Optional(Type.String()),
+				color: Type.Optional(Type.String({ description: "Color, or empty string to clear." })),
+				icon: Type.Optional(Type.String({ description: "Icon text, or empty string to clear." })),
+			}),
+			execute: async (_id, params) =>
+				memoResult("Update memo list", "memo_list_update", params.id, () =>
+					host.updateMemoList({
+						id: params.id,
+						name: params.name,
+						color: params.color === undefined ? undefined : params.color === "" ? null : params.color,
+						icon: params.icon === undefined ? undefined : params.icon === "" ? null : params.icon,
+					}),
+				),
+		}),
+		defineTool({
+			name: "memo_list_delete",
+			label: "Delete memo list",
+			description: "Delete a memo list / project. Memos in the list remain and are unassigned.",
+			promptSnippet: "Use when the user wants to remove a memo list but keep its memos.",
+			promptGuidelines: MEMO_GUIDELINES,
+			parameters: Type.Object({ id: Type.String() }),
+			execute: async (_id, params) =>
+				memoResult("Delete memo list", "memo_list_delete", params.id, () => ({
+					deleted: host.deleteMemoList({ id: params.id }),
+				})),
+		}),
+		defineTool({
+			name: "memo_attachment_add",
+			label: "Add memo attachment",
+			description: "Attach a local file or URL to a memo.",
+			promptSnippet: "Use when the user asks to attach a file or URL to a memo.",
+			promptGuidelines: MEMO_GUIDELINES,
+			parameters: Type.Object({
+				memoId: Type.String(),
+				name: Type.Optional(Type.String()),
+				filePath: Type.Optional(Type.String()),
+				url: Type.Optional(Type.String()),
+				type: Type.Optional(Type.Union([Type.Literal("file"), Type.Literal("image"), Type.Literal("url")])),
+			}),
+			execute: async (_id, params) =>
+				memoResult("Add memo attachment", "memo_attachment_add", params.memoId, () =>
+					host.addMemoAttachment({
+						memoId: params.memoId,
+						name: params.name,
+						filePath: params.filePath,
+						url: params.url,
+						type: params.type,
+					}),
+				),
+		}),
+		defineTool({
+			name: "memo_attachment_remove",
+			label: "Remove memo attachment",
+			description: "Remove an attachment from a memo.",
+			promptSnippet: "Use when the user asks to remove a memo attachment.",
+			promptGuidelines: MEMO_GUIDELINES,
+			parameters: Type.Object({
+				memoId: Type.String(),
+				attachmentId: Type.String(),
+			}),
+			execute: async (_id, params) =>
+				memoResult("Remove memo attachment", "memo_attachment_remove", params.attachmentId, () => ({
+					removed: host.removeMemoAttachment({ memoId: params.memoId, attachmentId: params.attachmentId }),
 				})),
 		}),
 	];
@@ -230,6 +451,12 @@ function memoResult(
 			error instanceof Error ? error.message : String(error),
 		);
 		return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+	}
+}
+
+function assertAutoRunHasReminder(autoRunAtReminder: boolean | undefined, reminderAt: string | null | undefined): void {
+	if (autoRunAtReminder === true && (!reminderAt || !reminderAt.trim())) {
+		throw new Error("autoRunAtReminder=true requires reminderAt.");
 	}
 }
 

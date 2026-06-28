@@ -55,6 +55,7 @@ import {
 	type DeleteForgeExtensionRequest,
 	type DesktopAssistantEvent,
 	type DesktopAssistantSnapshot,
+	type ExternalAppConfig,
 	type FileActionResponse,
 	type FilePathRequest,
 	type FocusSessionRequest,
@@ -64,6 +65,7 @@ import {
 	type GlobalMemoryEntry,
 	type GlobalMemoryListResponse,
 	type GlobalMemoryUpdateRequest,
+	type HomeWeatherView,
 	type InstallSoftwarePluginRequest,
 	type InstallSoftwarePluginResponse,
 	type ListForgeExtensionsResponse,
@@ -77,15 +79,31 @@ import {
 	type McpServerListResponse,
 	type McpServerStatus,
 	type McpServerUpsertRequest,
+	type MemoAttachment,
+	type MemoAttachmentAddRequest,
+	type MemoAttachmentRemoveRequest,
+	type MemoBatchRequest,
+	type MemoBatchResult,
 	type MemoCompleteRequest,
 	type MemoCreateRequest,
 	type MemoDeleteRequest,
 	type MemoItem,
+	type MemoList,
+	type MemoListCreateRequest,
+	type MemoListDeleteRequest,
+	type MemoListReorderRequest,
 	type MemoListRequest,
 	type MemoListResponse,
+	type MemoListUpdateRequest,
+	type MemoReorderRequest,
+	type MemoRunAutoRequest,
 	type MemoSetReminderRequest,
 	type MemoSnoozeRequest,
+	type MemoStatsResult,
 	type MemoUpdateRequest,
+	type MoreAppEvent,
+	type MoreAppTerminalResponse,
+	type MoreAppView,
 	type OpenBuiltInBrowserRequest,
 	type OpenUrlInDefaultBrowserRequest,
 	type PersonalSkillArchiveRequest,
@@ -98,6 +116,8 @@ import {
 	type PetDebugStateEvent,
 	type PetDebugUpdateRequest,
 	type PromptRequest,
+	type QueuedPreInputRequest,
+	type RefreshHomeWelcomeRequest,
 	type ResumeConversationRequest,
 	type SandboxCleanRequest,
 	type SandboxCleanResponse,
@@ -132,6 +152,7 @@ import {
 	type WakeWordModelReadRequest,
 	type WakeWordModelReadResponse,
 	type WindowMode,
+	type WithdrawQueuedPreInputResponse,
 } from "../shared/types.ts";
 
 export interface DesktopAssistantApi {
@@ -141,10 +162,14 @@ export interface DesktopAssistantApi {
 	focusSession(request: FocusSessionRequest): Promise<DesktopAssistantSnapshot>;
 	closeSession(request: CloseSessionRequest): Promise<DesktopAssistantSnapshot>;
 	prompt(request: PromptRequest): Promise<DesktopAssistantSnapshot>;
+	deleteQueuedPreInput(request: QueuedPreInputRequest): Promise<DesktopAssistantSnapshot>;
+	withdrawQueuedPreInput(request: QueuedPreInputRequest): Promise<WithdrawQueuedPreInputResponse>;
 	abort(request?: AbortRequest): Promise<DesktopAssistantSnapshot>;
 	updateConversationThinking(request: ConversationThinkingUpdateRequest): Promise<DesktopAssistantSnapshot>;
 	updateApiKey(request: ApiKeyUpdateRequest): Promise<DesktopAssistantSnapshot>;
 	updateSettings(request: SettingsUpdateRequest): Promise<DesktopAssistantSnapshot>;
+	refreshHomeWelcome(request?: RefreshHomeWelcomeRequest): Promise<void>;
+	getHomeWeather(): Promise<HomeWeatherView | undefined>;
 	listMcpServers(): Promise<McpServerListResponse>;
 	upsertMcpServer(request: McpServerUpsertRequest): Promise<McpServerListResponse>;
 	deleteMcpServer(request: McpServerDeleteRequest): Promise<McpServerListResponse>;
@@ -196,10 +221,21 @@ export interface DesktopAssistantApi {
 	listMemos(request?: MemoListRequest): Promise<MemoListResponse>;
 	createMemo(request: MemoCreateRequest): Promise<MemoItem>;
 	updateMemo(request: MemoUpdateRequest): Promise<MemoItem>;
+	reorderMemo(request: MemoReorderRequest): Promise<MemoItem[]>;
 	completeMemo(request: MemoCompleteRequest): Promise<MemoItem>;
 	snoozeMemo(request: MemoSnoozeRequest): Promise<MemoItem>;
 	setMemoReminder(request: MemoSetReminderRequest): Promise<MemoItem>;
+	runMemoAutoTaskNow(request: MemoRunAutoRequest): Promise<MemoItem>;
 	deleteMemo(request: MemoDeleteRequest): Promise<boolean>;
+	getMemoStats(): Promise<MemoStatsResult>;
+	batchMemos(request: MemoBatchRequest): Promise<MemoBatchResult>;
+	listMemoLists(): Promise<MemoList[]>;
+	createMemoList(request: MemoListCreateRequest): Promise<MemoList>;
+	updateMemoList(request: MemoListUpdateRequest): Promise<MemoList>;
+	reorderMemoList(request: MemoListReorderRequest): Promise<MemoList>;
+	deleteMemoList(request: MemoListDeleteRequest): Promise<boolean>;
+	addMemoAttachment(request: MemoAttachmentAddRequest): Promise<MemoAttachment>;
+	removeMemoAttachment(request: MemoAttachmentRemoveRequest): Promise<boolean>;
 	getAppLaunchCache(): Promise<AppLaunchCacheView>;
 	clearAppLaunchCache(): Promise<AppLaunchCacheView>;
 	deleteAppLaunchCacheEntry(request: DeleteAppLaunchCacheEntryRequest): Promise<AppLaunchCacheView>;
@@ -208,12 +244,21 @@ export interface DesktopAssistantApi {
 	openPath(request: FilePathRequest): Promise<FileActionResponse>;
 	showItemInFolder(request: FilePathRequest): Promise<FileActionResponse>;
 	copyFileToClipboard(request: FilePathRequest): Promise<FileActionResponse>;
+	listMoreApps(): Promise<MoreAppView[]>;
+	startMoreApp(appId: string): Promise<MoreAppView[]>;
+	stopMoreApp(appId: string): Promise<MoreAppView[]>;
+	openMoreApp(appId: string): Promise<MoreAppView[]>;
+	openMoreAppAtPath(appId: string, path: string): Promise<MoreAppView[]>;
+	getMoreAppTerminal(appId: string): Promise<MoreAppTerminalResponse>;
+	updateMoreAppConfig(appId: string, config: ExternalAppConfig): Promise<MoreAppView[]>;
+	onMoreAppEvent(listener: (event: MoreAppEvent) => void): () => void;
 	openBuiltInBrowser(request?: OpenBuiltInBrowserRequest): Promise<BuiltInBrowserStatus>;
 	getBuiltInBrowserStatus(): Promise<BuiltInBrowserStatus>;
 	builtInBrowserNavigate(request: BrowserNavigateRequest): Promise<BuiltInBrowserStatus>;
 	builtInBrowserNewTab(request?: { url?: string }): Promise<BuiltInBrowserStatus>;
 	builtInBrowserSwitchTab(request: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
 	builtInBrowserCloseTab(request: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
+	builtInBrowserCloseWindow(): Promise<{ ok: true; closed: boolean }>;
 	builtInBrowserGoBack(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
 	builtInBrowserGoForward(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
 	builtInBrowserReload(request?: BrowserTabRequest): Promise<BuiltInBrowserStatus>;
@@ -279,6 +324,13 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.closeSession, request) as Promise<DesktopAssistantSnapshot>,
 	prompt: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.prompt, request) as Promise<DesktopAssistantSnapshot>,
+	deleteQueuedPreInput: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.deleteQueuedPreInput, request) as Promise<DesktopAssistantSnapshot>,
+	withdrawQueuedPreInput: (request) =>
+		ipcRenderer.invoke(
+			DESKTOP_ASSISTANT_CHANNELS.withdrawQueuedPreInput,
+			request,
+		) as Promise<WithdrawQueuedPreInputResponse>,
 	abort: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.abort, request) as Promise<DesktopAssistantSnapshot>,
 	updateConversationThinking: (request) =>
@@ -290,6 +342,10 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.updateApiKey, request) as Promise<DesktopAssistantSnapshot>,
 	updateSettings: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.updateSettings, request) as Promise<DesktopAssistantSnapshot>,
+	refreshHomeWelcome: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.refreshHomeWelcome, request) as Promise<void>,
+	getHomeWeather: () =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.getHomeWeather) as Promise<HomeWeatherView | undefined>,
 	listMcpServers: () =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.listMcpServers) as Promise<McpServerListResponse>,
 	upsertMcpServer: (request) =>
@@ -433,11 +489,30 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoList, request ?? {}) as Promise<MemoListResponse>,
 	createMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoCreate, request) as Promise<MemoItem>,
 	updateMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoUpdate, request) as Promise<MemoItem>,
+	reorderMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoReorder, request) as Promise<MemoItem[]>,
 	completeMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoComplete, request) as Promise<MemoItem>,
 	snoozeMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoSnooze, request) as Promise<MemoItem>,
 	setMemoReminder: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoSetReminder, request) as Promise<MemoItem>,
+	runMemoAutoTaskNow: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoRunAutoNow, request) as Promise<MemoItem>,
 	deleteMemo: (request) => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoDelete, request) as Promise<boolean>,
+	getMemoStats: () => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoStats) as Promise<MemoStatsResult>,
+	batchMemos: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoBatch, request) as Promise<MemoBatchResult>,
+	listMemoLists: () => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoListList) as Promise<MemoList[]>,
+	createMemoList: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoListCreate, request) as Promise<MemoList>,
+	updateMemoList: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoListUpdate, request) as Promise<MemoList>,
+	reorderMemoList: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoListReorder, request) as Promise<MemoList>,
+	deleteMemoList: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoListDelete, request) as Promise<boolean>,
+	addMemoAttachment: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoAttachmentAdd, request) as Promise<MemoAttachment>,
+	removeMemoAttachment: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.memoAttachmentRemove, request) as Promise<boolean>,
 	getAppLaunchCache: () =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.getAppLaunchCache) as Promise<AppLaunchCacheView>,
 	clearAppLaunchCache: () =>
@@ -454,6 +529,24 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.showItemInFolder, request) as Promise<FileActionResponse>,
 	copyFileToClipboard: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.copyFileToClipboard, request) as Promise<FileActionResponse>,
+	listMoreApps: () => ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.listMoreApps) as Promise<MoreAppView[]>,
+	startMoreApp: (appId) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.startMoreApp, { appId }) as Promise<MoreAppView[]>,
+	stopMoreApp: (appId) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.stopMoreApp, { appId }) as Promise<MoreAppView[]>,
+	openMoreApp: (appId) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openMoreApp, { appId }) as Promise<MoreAppView[]>,
+	openMoreAppAtPath: (appId, path) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openMoreAppAtPath, { appId, path }) as Promise<MoreAppView[]>,
+	getMoreAppTerminal: (appId) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.getMoreAppTerminal, { appId }) as Promise<MoreAppTerminalResponse>,
+	updateMoreAppConfig: (appId, config) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.updateMoreAppConfig, { appId, config }) as Promise<MoreAppView[]>,
+	onMoreAppEvent: (listener) => {
+		const wrapped = (_event: Electron.IpcRendererEvent, payload: MoreAppEvent) => listener(payload);
+		ipcRenderer.on(DESKTOP_ASSISTANT_CHANNELS.moreAppEvent, wrapped);
+		return () => ipcRenderer.off(DESKTOP_ASSISTANT_CHANNELS.moreAppEvent, wrapped);
+	},
 	openBuiltInBrowser: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.openBuiltInBrowser, request ?? {}) as Promise<BuiltInBrowserStatus>,
 	getBuiltInBrowserStatus: () =>
@@ -469,6 +562,11 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserSwitchTab, request) as Promise<BuiltInBrowserStatus>,
 	builtInBrowserCloseTab: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserCloseTab, request) as Promise<BuiltInBrowserStatus>,
+	builtInBrowserCloseWindow: () =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserCloseWindow) as Promise<{
+			ok: true;
+			closed: boolean;
+		}>,
 	builtInBrowserGoBack: (request) =>
 		ipcRenderer.invoke(
 			DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGoBack,

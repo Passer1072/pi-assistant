@@ -24,6 +24,7 @@ export interface BrowserToolHost {
 	newTab(target: BrowserTarget, url?: string): Promise<unknown>;
 	switchTab(target: BrowserTarget, request: BrowserTabRequest): Promise<unknown>;
 	closeTab(target: BrowserTarget, request: BrowserTabRequest): Promise<unknown>;
+	closeWindow(target: BrowserTarget): Promise<unknown>;
 	readPage(target: BrowserTarget, request: BrowserReadPageRequest): Promise<unknown>;
 	queryElements(target: BrowserTarget, request: BrowserQueryElementsRequest): Promise<unknown>;
 	click(target: BrowserTarget, request: BrowserElementActionRequest): Promise<unknown>;
@@ -42,6 +43,7 @@ export const BROWSER_TOOL_NAMES = [
 	"browser_new_tab",
 	"browser_switch_tab",
 	"browser_close_tab",
+	"browser_close_window",
 	"browser_read_page",
 	"browser_query_elements",
 	"browser_click",
@@ -72,6 +74,7 @@ const ROUTING_GUIDELINES = [
 	"Do not switch browsers casually. If the default browser cannot perform the task, explain the limitation before choosing a fallback.",
 	"Use the built-in browser for the richest inspection data when it is the selected/default browser: page text, HTML/source, elements, console, network, cookies, screenshots, and virtual mouse are available.",
 	"Chrome and Edge use the assistant's dedicated persistent AI profile, not the user's daily browsing profile.",
+	"Use browser_close_window only to close the assistant's built-in browser window. It never targets Chrome or Edge.",
 ];
 
 export function createBrowserToolDefinitions(host: BrowserToolHost): ToolDefinition[] {
@@ -165,6 +168,39 @@ export function createBrowserToolDefinitions(host: BrowserToolHost): ToolDefinit
 					params.browser,
 					(target) => host.closeTab(target, { tabId: params.tabId }),
 				),
+		}),
+		defineTool({
+			name: "browser_close_window",
+			label: "Close built-in browser window",
+			description:
+				"Close only the assistant's built-in browser window. This does not close the AI assistant main window, Chrome, or Edge.",
+			promptSnippet:
+				"Use browser_close_window when the workflow is finished and the user asked to close the built-in browser itself.",
+			promptGuidelines: ROUTING_GUIDELINES,
+			parameters: Type.Object({}),
+			execute: async () => {
+				try {
+					const payload = await host.closeWindow("built_in");
+					const details = buildDetails(
+						"Close built-in browser window",
+						"browser_close_window",
+						"built_in:window",
+						"succeeded",
+						JSON.stringify({ browser: "built_in", result: payload }, null, 2),
+					);
+					return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+				} catch (error) {
+					const details = buildDetails(
+						"Close built-in browser window",
+						"browser_close_window",
+						"built_in:window",
+						"failed",
+						undefined,
+						error instanceof Error ? error.message : String(error),
+					);
+					return { content: [{ type: "text", text: JSON.stringify(details) }], details };
+				}
+			},
 		}),
 		defineTool({
 			name: "browser_read_page",

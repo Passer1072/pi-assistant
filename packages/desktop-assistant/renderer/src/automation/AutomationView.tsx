@@ -1,9 +1,13 @@
 import {
 	ArrowLeft,
 	Bot,
+	Ban,
 	CalendarClock,
+	CheckCircle2,
+	CircleX,
 	Clock3,
 	ExternalLink,
+	Loader2,
 	Play,
 	Plus,
 	Power,
@@ -17,6 +21,7 @@ import { useEffect, useMemo, useState } from "react";
 import type {
 	AutomationFlow,
 	AutomationListResponse,
+	AutomationProgressEvent,
 	AutomationRunPolicy,
 	AutomationRunRecord,
 	AutomationTrigger,
@@ -27,7 +32,14 @@ import type {
 } from "../../../src/shared/types.ts";
 import { TitleBar } from "../components/TitleBar.tsx";
 import { formatTime } from "../formatters.ts";
-import { flowKindLabel, formatRunStatus, triggerSummary } from "./types.ts";
+import { FlowGraphPreview } from "./FlowGraph.tsx";
+import { formatRunStatus, triggerSummary } from "./types.ts";
+
+/** Per-flow live execution state derived from automation_progress events. */
+interface FlowProgress {
+	activeNodeId?: string;
+	doneNodeIds: string[];
+}
 
 const PERMISSION_LABEL: Record<AutomationRunPolicy["permissionMode"], string> = {
 	full_access: "完全控制",
@@ -94,6 +106,11 @@ export function AutomationView({
 	const [saving, setSaving] = useState(false);
 	const [runningId, setRunningId] = useState<string | undefined>();
 	const [statusText, setStatusText] = useState("");
+	const [progressByFlow, setProgressByFlow] = useState<Record<string, FlowProgress>>({});
+	const [compactPanel, setCompactPanel] = useState<"list" | "detail">("list");
+	const [isCompactViewport, setIsCompactViewport] = useState(() =>
+		typeof window === "undefined" ? false : window.matchMedia("(max-width: 767px)").matches,
+	);
 
 	const loadFlows = async () => {
 		if (!window.desktopAssistant?.automationList) return;
@@ -109,6 +126,9 @@ export function AutomationView({
 	useEffect(() => {
 		if (!window.desktopAssistant?.onEvent) return undefined;
 		return window.desktopAssistant.onEvent((event: DesktopAssistantEvent) => {
+			if (event.type === "automation_progress" && event.automationProgress) {
+				applyFlowProgress(event.automationProgress);
+			}
 			if (
 				event.type === "automation_changed" ||
 				event.type === "automation_missed" ||
@@ -119,6 +139,45 @@ export function AutomationView({
 			}
 		});
 	}, []);
+
+	useEffect(() => {
+		const media = window.matchMedia("(max-width: 767px)");
+		const syncCompactViewport = () => {
+			setIsCompactViewport(media.matches);
+			if (!media.matches) setCompactPanel("list");
+		};
+		syncCompactViewport();
+		media.addEventListener("change", syncCompactViewport);
+		return () => media.removeEventListener("change", syncCompactViewport);
+	}, []);
+
+	// Mirror the editor's live node highlight on the management page: track which node a flow is
+	// currently executing (and which it has finished) so the read-only graph can light them up.
+	const applyFlowProgress = (progress: AutomationProgressEvent) => {
+		setProgressByFlow((current) => {
+			const flowId = progress.flowId;
+			if (progress.kind === "finish") {
+				if (!(flowId in current)) return current;
+				const next = { ...current };
+				delete next[flowId];
+				return next;
+			}
+			const existing = current[flowId] ?? { doneNodeIds: [] };
+			if (progress.kind === "step" && progress.nodeId) {
+				if (progress.phase === "enter") {
+					return { ...current, [flowId]: { ...existing, activeNodeId: progress.nodeId } };
+				}
+				if (progress.phase === "done") {
+					const doneNodeIds = existing.doneNodeIds.includes(progress.nodeId)
+						? existing.doneNodeIds
+						: [...existing.doneNodeIds, progress.nodeId];
+					const activeNodeId = existing.activeNodeId === progress.nodeId ? undefined : existing.activeNodeId;
+					return { ...current, [flowId]: { activeNodeId, doneNodeIds } };
+				}
+			}
+			return current;
+		});
+	};
 
 	const visibleFlows = useMemo(() => {
 		const normalized = query.trim().toLowerCase();
@@ -141,10 +200,16 @@ export function AutomationView({
 	const selected =
 		visibleFlows.find((flow) => flow.id === selectedId) ?? list.flows.find((flow) => flow.id === selectedId) ?? visibleFlows[0];
 	const activeRun = selected?.runs.find((run) => run.status === "running");
+	const activeCompactPanel = selected ? compactPanel : "list";
 
 	useEffect(() => {
 		if (selected && selected.id !== selectedId) setSelectedId(selected.id);
 	}, [selected, selectedId]);
+
+	const selectFlow = (id: string) => {
+		setSelectedId(id);
+		if (isCompactViewport) setCompactPanel("detail");
+	};
 
 	const createFlow = async () => {
 		if (!window.desktopAssistant?.automationOpenEditor) return;
@@ -251,7 +316,11 @@ export function AutomationView({
 		try {
 			const next = await window.desktopAssistant.automationDelete({ id: flow.id });
 			setList(next);
-			setSelectedId((current) => (current === flow.id ? next.flows[0]?.id : current));
+			setSelectedId((current) => {
+				if (current !== flow.id) return current;
+				setCompactPanel("list");
+				return next.flows[0]?.id;
+			});
 		} catch (error) {
 			setStatusText(error instanceof Error ? error.message : String(error));
 		} finally {
@@ -272,7 +341,7 @@ export function AutomationView({
 				onToggleWindowMode={onToggleWindowMode}
 			/>
 
-			<div className="automation-body">
+			<div className={`automation-body compact-${activeCompactPanel}`}>
 			<header className="automation-head">
 				<button className="title-btn" type="button" onClick={onBack} aria-label="返回">
 					<ArrowLeft size={16} />
@@ -283,7 +352,7 @@ export function AutomationView({
 						共 {list.summary.total} 个流程，{list.summary.enabledCount} 个已启用，{list.summary.runningCount} 个运行中
 					</span>
 				</div>
-				<button className="automation-primary-btn" type="button" onClick={() => void createFlow()} disabled={saving}>
+				<button className="automation-primary-btn automation-head-new" type="button" onClick={() => void createFlow()} disabled={saving}>
 					<Plus size={15} />
 					<span>新建</span>
 				</button>
@@ -309,7 +378,7 @@ export function AutomationView({
 				) : null}
 			</div>
 
-			<div className="automation-layout">
+			<div className={`automation-layout compact-${activeCompactPanel}`}>
 				<section className="automation-sidebar">
 					{visibleFlows.length ? (
 						visibleFlows.map((flow) => {
@@ -319,7 +388,7 @@ export function AutomationView({
 									type="button"
 									key={flow.id}
 									className={`automation-flow-card ${selected?.id === flow.id ? "active" : ""}`}
-									onClick={() => setSelectedId(flow.id)}
+									onClick={() => selectFlow(flow.id)}
 								>
 									<div className="automation-flow-card-top">
 										<div>
@@ -361,6 +430,7 @@ export function AutomationView({
 							flow={selected}
 							busy={saving || runningId === selected.id}
 							activeRun={activeRun}
+							progress={progressByFlow[selected.id]}
 							statusText={statusText}
 							onSaveTrigger={saveTrigger}
 							onSaveRunPolicy={saveRunPolicy}
@@ -370,6 +440,7 @@ export function AutomationView({
 							onCancelRun={cancelRun}
 							onDelete={deleteFlow}
 							onOpenSession={onOpenSession}
+							onBackToList={() => setCompactPanel("list")}
 						/>
 					) : (
 						<div className="automation-empty detail">
@@ -388,6 +459,7 @@ function AutomationDetail({
 	flow,
 	busy,
 	activeRun,
+	progress,
 	statusText,
 	onSaveTrigger,
 	onSaveRunPolicy,
@@ -397,10 +469,12 @@ function AutomationDetail({
 	onCancelRun,
 	onDelete,
 	onOpenSession,
+	onBackToList,
 }: {
 	flow: AutomationFlow;
 	busy: boolean;
 	activeRun?: AutomationRunRecord;
+	progress?: FlowProgress;
 	statusText: string;
 	onSaveTrigger: (flow: AutomationFlow, trigger: AutomationTrigger) => Promise<void>;
 	onSaveRunPolicy: (flow: AutomationFlow, runPolicy: AutomationRunPolicy) => Promise<void>;
@@ -410,6 +484,7 @@ function AutomationDetail({
 	onCancelRun: (flow: AutomationFlow, run: AutomationRunRecord) => Promise<void>;
 	onDelete: (flow: AutomationFlow) => Promise<void>;
 	onOpenSession?: (sessionId: string) => void;
+	onBackToList: () => void;
 }) {
 	const [trigger, setTrigger] = useState<AutomationTrigger>(flow.trigger);
 	const [runPolicy, setRunPolicy] = useState<AutomationRunPolicy>(flow.runPolicy);
@@ -421,33 +496,49 @@ function AutomationDetail({
 
 	return (
 		<>
+			<button type="button" className="automation-detail-back" onClick={onBackToList}>
+				<ArrowLeft size={15} />
+				<span>{"\u5168\u90e8\u6d41\u7a0b"}</span>
+				<span className={`automation-status-pill ${flow.enabled ? "live" : "idle"}`}>
+					{flow.enabled ? "\u5df2\u542f\u7528" : "\u5df2\u505c\u7528"}
+				</span>
+			</button>
 			<div className="automation-detail-head">
-				<div>
+				<div className="automation-detail-title">
 					<h2>{flow.name}</h2>
 					<p>{flow.description.trim() || "描述这个自动化要做什么、何时运行、出错如何恢复。"}</p>
 				</div>
 				<div className="automation-detail-actions">
-					<button type="button" className="automation-ghost-btn" onClick={() => void onToggleEnabled(flow)} disabled={busy}>
-						{flow.enabled ? <PowerOff size={14} /> : <Power size={14} />}
-						<span>{flow.enabled ? "停用" : "启用"}</span>
-					</button>
-					<button type="button" className="automation-ghost-btn" onClick={() => void onOpenEditor(flow)} disabled={busy}>
-						<Workflow size={14} />
-						<span>编辑流程图</span>
-					</button>
-					<button type="button" className="automation-primary-btn" onClick={() => void onRun(flow)} disabled={busy}>
-						<Play size={14} />
-						<span>运行</span>
-					</button>
-					<button type="button" className="automation-danger-btn" onClick={() => void onDelete(flow)} disabled={busy}>
-						<Trash2 size={14} />
-						<span>删除</span>
-					</button>
+					<div className="automation-detail-action-primary">
+						<button type="button" className="automation-primary-btn" onClick={() => void onRun(flow)} disabled={busy}>
+							<Play size={14} />
+							<span>运行</span>
+						</button>
+						<button type="button" className="automation-ghost-btn" onClick={() => void onOpenEditor(flow)} disabled={busy}>
+							<Workflow size={14} />
+							<span>编辑流程图</span>
+						</button>
+					</div>
+					<div className="automation-detail-action-secondary">
+						<button type="button" className="automation-ghost-btn" onClick={() => void onToggleEnabled(flow)} disabled={busy}>
+							{flow.enabled ? <PowerOff size={14} /> : <Power size={14} />}
+							<span>{flow.enabled ? "停用" : "启用"}</span>
+						</button>
+						<button
+							type="button"
+							className="automation-danger-btn automation-detail-delete"
+							onClick={() => void onDelete(flow)}
+							disabled={busy}
+						>
+							<Trash2 size={14} />
+							<span>删除</span>
+						</button>
+					</div>
 				</div>
 			</div>
 
 			<div className="automation-panels">
-				<section className="automation-panel">
+				<section className="automation-panel automation-panel-config">
 					<div className="automation-panel-title">触发器</div>
 					<div className="automation-policy-row">
 						<label className="automation-field">
@@ -504,39 +595,67 @@ function AutomationDetail({
 					</div>
 				</section>
 
-				<section className="automation-panel">
-					<div className="automation-panel-title">流程图</div>
-					<div className="automation-graph-preview">
-						{flow.nodes.map((node) => (
-							<div key={node.id} className={`automation-graph-node kind-${node.kind}`}>
-								<strong>{node.label}</strong>
-								<span>{flowKindLabel(node.kind)}</span>
+				<section className="automation-panel automation-panel-graph">
+					<div className="automation-panel-title">
+						<span>流程图</span>
+						{activeRun ? (
+							<span className="automation-graph-running">
+								<Loader2 size={12} className="spin" />
+								运行中
+							</span>
+						) : null}
+					</div>
+					<div className="automation-graph-canvas">
+						{flow.nodes.length ? (
+							<FlowGraphPreview
+								nodes={flow.nodes}
+								edges={flow.edges}
+								activeNodeId={progress?.activeNodeId}
+								doneNodeIds={progress ? new Set(progress.doneNodeIds) : undefined}
+							/>
+						) : (
+							<div className="automation-empty compact">
+								<Workflow size={28} />
+								<p>这个流程还没有节点。打开编辑器添加步骤。</p>
 							</div>
-						))}
+						)}
 					</div>
 					<div className="automation-graph-meta">
 						<span>{flow.nodes.length} 个节点</span>
 						<span>{flow.edges.length} 条连接</span>
 						<span>权限：{PERMISSION_LABEL[flow.runPolicy.permissionMode]}</span>
 					</div>
-					<div className="automation-draft-notes">
-						<Bot size={14} />
-						<p>{flow.description.trim() || "在编辑器窗口中补充执行说明与 AI 规划上下文。"}</p>
-					</div>
 				</section>
-			</div>
 
-			<section className="automation-panel history">
-				<div className="automation-panel-title">运行历史</div>
+			<section className="automation-panel automation-panel-history history">
+				<div className="automation-panel-title">
+					<span>运行历史</span>
+					<span className="automation-history-count">{flow.runs.length} 条记录</span>
+				</div>
 				{activeRun ? (
 					<div className="automation-active-run">
-						<div>
-							<strong>{activeRun.summary || "流程运行中"}</strong>
-							<span>{formatRunStatus(activeRun.status)}</span>
+						<div className="automation-active-run-main">
+							<span className="automation-run-spinner">
+								<Loader2 size={15} className="spin" />
+							</span>
+							<div className="automation-active-run-copy">
+								<strong>
+									{progress?.activeNodeId
+										? `正在执行：${flow.nodes.find((node) => node.id === progress.activeNodeId)?.label ?? progress.activeNodeId}`
+										: activeRun.summary || "流程运行中"}
+								</strong>
+								<span>
+									{RUN_TRIGGER_LABEL[activeRun.trigger]} · 开始于 {new Date(activeRun.startedAt).toLocaleTimeString()}
+								</span>
+							</div>
 						</div>
-						<button type="button" className="automation-ghost-btn" onClick={() => void onCancelRun(flow, activeRun)} disabled={busy}>
-							<Square size={12} />
-							<span>取消</span>
+						<button
+							type="button"
+							className="automation-danger-btn"
+							onClick={() => void onCancelRun(flow, activeRun)}
+						>
+							<Square size={13} />
+							<span>中断</span>
 						</button>
 					</div>
 				) : null}
@@ -544,28 +663,29 @@ function AutomationDetail({
 					{flow.runs.length ? (
 						flow.runs.map((run) => (
 							<article key={run.id} className={`automation-history-card status-${run.status}`}>
-								<div className="automation-history-card-top">
-									<div>
+								<span className={`automation-history-icon status-${run.status}`}>{runStatusIcon(run.status)}</span>
+								<div className="automation-history-body">
+									<div className="automation-history-card-top">
 										<strong>{run.summary || run.error || `${RUN_TRIGGER_LABEL[run.trigger]}运行`}</strong>
-										<span>{formatRunStatus(run.status)}</span>
+										<span className={`automation-run-state status-${run.status}`}>{formatRunStatus(run.status)}</span>
 									</div>
-									{run.sessionId && onOpenSession ? (
-										<button
-											type="button"
-											className="automation-icon-btn"
-											aria-label="打开运行会话"
-											title="打开运行会话"
-											onClick={() => onOpenSession(run.sessionId as string)}
-										>
-											<ExternalLink size={13} />
-										</button>
-									) : null}
+									<div className="automation-history-card-meta">
+										<span>{RUN_TRIGGER_LABEL[run.trigger]}</span>
+										<span>{formatTime(Date.parse(run.startedAt) || Date.now())}</span>
+										{run.finishedAt ? <span>耗时 {formatRunDuration(run.startedAt, run.finishedAt)}</span> : null}
+									</div>
 								</div>
-								<div className="automation-history-card-meta">
-									<span>{formatTime(Date.parse(run.startedAt) || Date.now())}</span>
-									<span>{RUN_TRIGGER_LABEL[run.trigger]}</span>
-									{run.finishedAt ? <span>{new Date(run.finishedAt).toLocaleTimeString()}</span> : null}
-								</div>
+								{run.sessionId && onOpenSession ? (
+									<button
+										type="button"
+										className="automation-icon-btn"
+										aria-label="打开运行会话"
+										title="打开运行会话"
+										onClick={() => onOpenSession(run.sessionId as string)}
+									>
+										<ExternalLink size={13} />
+									</button>
+								) : null}
 							</article>
 						))
 					) : (
@@ -577,6 +697,7 @@ function AutomationDetail({
 				</div>
 				{statusText ? <div className="automation-status-text">{statusText}</div> : null}
 			</section>
+			</div>
 		</>
 	);
 }
@@ -650,6 +771,30 @@ function TriggerEditor({
 			) : null}
 		</>
 	);
+}
+
+function runStatusIcon(status: AutomationRunRecord["status"]) {
+	switch (status) {
+		case "running":
+			return <Loader2 size={15} className="spin" />;
+		case "succeeded":
+			return <CheckCircle2 size={15} />;
+		case "failed":
+			return <CircleX size={15} />;
+		case "cancelled":
+			return <Ban size={15} />;
+	}
+}
+
+function formatRunDuration(startedAt: string, finishedAt: string): string {
+	const ms = Date.parse(finishedAt) - Date.parse(startedAt);
+	if (!Number.isFinite(ms) || ms < 0) return "—";
+	if (ms < 1000) return `${ms}ms`;
+	const seconds = Math.round(ms / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const rest = seconds % 60;
+	return rest ? `${minutes}m${rest}s` : `${minutes}m`;
 }
 
 function defaultTrigger(kind: AutomationTrigger["kind"]): AutomationTrigger {

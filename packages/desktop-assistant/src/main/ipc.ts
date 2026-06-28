@@ -48,15 +48,26 @@ import {
 	type McpServerActionRequest,
 	type McpServerDeleteRequest,
 	type McpServerUpsertRequest,
+	type MemoAttachmentAddRequest,
+	type MemoAttachmentRemoveRequest,
+	type MemoBatchRequest,
 	type MemoCompleteRequest,
 	type MemoCreateRequest,
 	type MemoDeleteRequest,
 	type MemoItem,
+	type MemoListCreateRequest,
+	type MemoListDeleteRequest,
+	type MemoListReorderRequest,
 	type MemoListRequest,
+	type MemoListUpdateRequest,
+	type MemoReorderRequest,
+	type MemoRunAutoRequest,
 	type MemoSetReminderRequest,
 	type MemoSnoozeRequest,
 	type MemoUpdateRequest,
+	type MoreAppActionRequest,
 	type OpenBuiltInBrowserRequest,
+	type OpenMoreAppAtPathRequest,
 	type OpenUrlInDefaultBrowserRequest,
 	type PersonalSkillArchiveRequest,
 	type PersonalSkillReadRequest,
@@ -66,6 +77,8 @@ import {
 	type PetDebugStateEvent,
 	type PetDebugUpdateRequest,
 	type PromptRequest,
+	type QueuedPreInputRequest,
+	type RefreshHomeWelcomeRequest,
 	type ResumeConversationRequest,
 	type SandboxCleanRequest,
 	type SetForgeExtensionTrustRequest,
@@ -77,6 +90,7 @@ import {
 	type TestSoftwarePluginBridgeRequest,
 	type TranscribeAudioRequest,
 	type UninstallSoftwarePluginRequest,
+	type UpdateMoreAppConfigRequest,
 	type ValidateSoftwarePluginTargetRequest,
 	type VoiceApiKeyUpdateRequest,
 	type VoiceOverlayUpdateRequest,
@@ -91,6 +105,7 @@ import type { KwsService } from "../voice/kws-service.ts";
 import { transcribeAudio } from "../voice/stt-client.ts";
 import type { VoiceBridge } from "../voice/voice-bridge.ts";
 import type { BuiltInBrowserController } from "./built-in-browser-controller.ts";
+import type { ExternalAppController } from "./external-app-controller.ts";
 import type { LogStore } from "./log-store.ts";
 import type { WakeWordModelStore } from "./wake-word-model-store.ts";
 import { applyWindowMode } from "./window-mode.ts";
@@ -259,6 +274,7 @@ export function registerDesktopAssistantIpc(params: {
 	getWindows?: () => Iterable<BrowserWindow>;
 	service: DesktopAgentService;
 	builtInBrowserController: BuiltInBrowserController;
+	externalAppController: ExternalAppController;
 	voiceBridge: VoiceBridge;
 	logStore: LogStore;
 	wakeWordModelStore: WakeWordModelStore;
@@ -278,6 +294,7 @@ export function registerDesktopAssistantIpc(params: {
 		getWindows,
 		service,
 		builtInBrowserController,
+		externalAppController,
 		voiceBridge,
 		logStore,
 		wakeWordModelStore,
@@ -430,9 +447,15 @@ export function registerDesktopAssistantIpc(params: {
 			title: request.message.length > 80 ? `${request.message.slice(0, 80)}…` : request.message,
 			detail: request.message.length > 80 ? request.message : undefined,
 		});
-		await service.prompt(request.message, request.source, request.attachments, request.sessionId);
+		await service.prompt(request.message, request.source, request.attachments, request.sessionId, request.delivery);
 		return service.snapshot();
 	});
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.deleteQueuedPreInput, (_event, request: QueuedPreInputRequest) =>
+		service.deleteQueuedPreInput(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.withdrawQueuedPreInput, (_event, request: QueuedPreInputRequest) =>
+		service.withdrawQueuedPreInput(request),
+	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.abort, (_event, request?: AbortRequest) => {
 		service.abort(request?.sessionId);
 		return service.snapshot();
@@ -452,6 +475,10 @@ export function registerDesktopAssistantIpc(params: {
 		);
 		return service.updateSettings(settings);
 	});
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.refreshHomeWelcome, (_event, request?: RefreshHomeWelcomeRequest) => {
+		void service.refreshHomeWelcome(request);
+	});
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.getHomeWeather, () => service.getHomeWeather());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.listMcpServers, () => service.listMcpServers());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.upsertMcpServer, (_event, request: McpServerUpsertRequest) =>
 		service.upsertMcpServer(request),
@@ -528,6 +555,9 @@ export function registerDesktopAssistantIpc(params: {
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoUpdate, (_event, request: MemoUpdateRequest) =>
 		service.updateMemo(request),
 	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoReorder, (_event, request: MemoReorderRequest) =>
+		service.reorderMemo(request),
+	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoComplete, (_event, request: MemoCompleteRequest) =>
 		service.completeMemo(request),
 	);
@@ -537,8 +567,34 @@ export function registerDesktopAssistantIpc(params: {
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoSetReminder, (_event, request: MemoSetReminderRequest) =>
 		service.setMemoReminder(request),
 	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoRunAutoNow, (_event, request: MemoRunAutoRequest) =>
+		service.runMemoAutoTaskNow(request),
+	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoDelete, (_event, request: MemoDeleteRequest) =>
 		service.deleteMemo(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoStats, () => service.getMemoStats());
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoBatch, (_event, request: MemoBatchRequest) =>
+		service.batchMemos(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoListList, () => service.listMemoLists());
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoListCreate, (_event, request: MemoListCreateRequest) =>
+		service.createMemoList(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoListUpdate, (_event, request: MemoListUpdateRequest) =>
+		service.updateMemoList(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoListReorder, (_event, request: MemoListReorderRequest) =>
+		service.reorderMemoList(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoListDelete, (_event, request: MemoListDeleteRequest) =>
+		service.deleteMemoList(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoAttachmentAdd, (_event, request: MemoAttachmentAddRequest) =>
+		service.addMemoAttachment(request),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.memoAttachmentRemove, (_event, request: MemoAttachmentRemoveRequest) =>
+		service.removeMemoAttachment(request),
 	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationList, () => service.listAutomations());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationGet, (_event, request: { id: string }) => {
@@ -639,6 +695,7 @@ export function registerDesktopAssistantIpc(params: {
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserCloseTab, (_event, request: BrowserTabRequest) =>
 		builtInBrowserController.closeTab(request),
 	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserCloseWindow, () => builtInBrowserController.closeWindow());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.builtInBrowserGoBack, (_event, request: BrowserTabRequest = {}) =>
 		builtInBrowserController.goBack(request),
 	);
@@ -691,6 +748,26 @@ export function registerDesktopAssistantIpc(params: {
 	ipcMain.handle(
 		DESKTOP_ASSISTANT_CHANNELS.builtInBrowserVirtualMouse,
 		(_event, request: BrowserVirtualMouseRequest) => builtInBrowserController.virtualMouse(request),
+	);
+	// ── 更多应用 (external local web apps) ───────────────────────────────────────
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.listMoreApps, () => externalAppController.listApps());
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.startMoreApp, (_event, request: MoreAppActionRequest) =>
+		externalAppController.startApp(request.appId),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.stopMoreApp, (_event, request: MoreAppActionRequest) =>
+		externalAppController.stopApp(request.appId),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openMoreApp, (_event, request: MoreAppActionRequest) =>
+		externalAppController.openApp(request.appId),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.openMoreAppAtPath, (_event, request: OpenMoreAppAtPathRequest) =>
+		externalAppController.openAppAtPath(request.appId, request.path),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.getMoreAppTerminal, (_event, request: MoreAppActionRequest) =>
+		externalAppController.getTerminal(request.appId),
+	);
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.updateMoreAppConfig, (_event, request: UpdateMoreAppConfigRequest) =>
+		externalAppController.updateConfig(request.appId, request.config),
 	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.getSandboxStatus, () => service.getSandboxStatus());
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.initSandbox, () => service.initSandbox());

@@ -152,6 +152,12 @@ export interface AiReadableConversationArchive {
 		kind: string;
 		payload: unknown;
 	}>;
+	steeringEntries?: Array<{
+		id: string;
+		text: string;
+		appliedAt: number;
+		order: number;
+	}>;
 	eventKinds: Record<string, number>;
 }
 
@@ -624,6 +630,7 @@ export class ConversationArchiveWriter {
 		const tools: AiReadableConversationArchive["tools"] = [];
 		const confirmations: AiReadableConversationArchive["confirmations"] = [];
 		const timeline: AiReadableConversationArchive["timeline"] = [];
+		const steeringEntries: NonNullable<AiReadableConversationArchive["steeringEntries"]> = [];
 		const eventKinds: Record<string, number> = {};
 		let lastUserMessage: string | undefined;
 		let lastAssistantMessage: string | undefined;
@@ -836,6 +843,16 @@ export class ConversationArchiveWriter {
 				}
 			}
 
+			if (record.kind === "steer_prompt_applied") {
+				const id = getStringField(record.payload, "id");
+				const text = getStringField(record.payload, "text");
+				const appliedAt = getNestedNumberField(record.payload, ["appliedAt"]);
+				const order = getNestedNumberField(record.payload, ["order"]);
+				if (id && text && appliedAt !== undefined && order !== undefined) {
+					steeringEntries.push({ id, text, appliedAt, order });
+				}
+			}
+
 			if (record.kind.includes("confirmation")) {
 				confirmationCount += 1;
 				confirmations.push({
@@ -897,6 +914,7 @@ export class ConversationArchiveWriter {
 			tools,
 			confirmations,
 			timeline,
+			steeringEntries: steeringEntries.length > 0 ? steeringEntries : undefined,
 			eventKinds,
 		};
 	}

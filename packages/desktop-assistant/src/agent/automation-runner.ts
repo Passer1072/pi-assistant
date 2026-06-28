@@ -10,6 +10,12 @@ export interface AutomationRunnerHost {
 	): AutomationRunRecord | undefined;
 	emitChanged(flowId: string): void;
 	emitProgress(flowId: string, runId: string, message: string): void;
+	/**
+	 * Emit a structured terminal progress event so every window (editor + automation page) can
+	 * clear its "running" state, even when the agent itself didn't call automation_finish (e.g. a
+	 * failure or an external cancel).
+	 */
+	emitFinish(flowId: string, runId: string, status: "succeeded" | "failed" | "cancelled", summary?: string): void;
 	createBackgroundConversation(
 		flow: AutomationFlow,
 		run: AutomationRunRecord,
@@ -24,6 +30,13 @@ export class AutomationRunner {
 		this.host = host;
 	}
 
+	/**
+	 * Start a run and return the freshly-created (still "running") run record immediately. The
+	 * agent conversation then drives the flow in the background, surfacing progress through the
+	 * host's emit* callbacks. Resolving up front (instead of awaiting the whole run) is what lets
+	 * the UI show a live "running" state, highlight the executing node, and offer a working
+	 * interrupt button while the flow is still in progress.
+	 */
 	async runAutomation(flow: AutomationFlow, options: { trigger: AutomationRunTrigger }): Promise<AutomationRunRecord> {
 		if (this.activeRuns.has(flow.id)) throw new Error(`Automation is already running: ${flow.name}`);
 		const run = this.host.recordRunStart(flow.id, options.trigger);
@@ -31,22 +44,37 @@ export class AutomationRunner {
 		this.activeRuns.set(flow.id, { runId: run.id, abort: conversation.abort });
 		this.host.emitChanged(flow.id);
 		this.host.emitProgress(flow.id, run.id, `Automation run started: ${flow.name}`);
+		void this.executeRun(flow, run.id, conversation);
+		return run;
+	}
+
+	private async executeRun(
+		flow: AutomationFlow,
+		runId: string,
+		conversation: { sessionId: string; prompt(message: string): Promise<void>; finalize?(): Promise<void> },
+	): Promise<void> {
 		try {
 			await conversation.prompt(serializeFlowToRunbook(flow));
-			const finished = this.host.recordRunFinish(flow.id, run.id, "succeeded", {
+			// recordRunFinish is a no-op once the run already settled (e.g. the agent called
+			// automation_finish, or it was cancelled), so a duplicate "succeeded" here is harmless.
+			const finished = this.host.recordRunFinish(flow.id, runId, "succeeded", {
 				summary: "Automation run completed.",
 				sessionId: conversation.sessionId,
 			});
+			// finished.status is whatever the run actually settled on (e.g. "failed" if the agent
+			// itself reported failure via automation_finish), never "running" once settled.
+			const status = finished && finished.status !== "running" ? finished.status : "succeeded";
 			this.host.emitChanged(flow.id);
-			return finished ?? run;
+			this.host.emitFinish(flow.id, runId, status, finished?.summary);
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
-			const finished = this.host.recordRunFinish(flow.id, run.id, "failed", {
+			const finished = this.host.recordRunFinish(flow.id, runId, "failed", {
 				error: message,
 				sessionId: conversation.sessionId,
 			});
+			const status = finished && finished.status !== "running" ? finished.status : "failed";
 			this.host.emitChanged(flow.id);
-			return finished ?? run;
+			this.host.emitFinish(flow.id, runId, status, finished?.summary ?? message);
 		} finally {
 			this.activeRuns.delete(flow.id);
 			await conversation.finalize?.();
@@ -60,6 +88,7 @@ export class AutomationRunner {
 		this.activeRuns.delete(flowId);
 		this.host.recordRunFinish(flowId, active.runId, "cancelled", { summary: "Automation run cancelled." });
 		this.host.emitChanged(flowId);
+		this.host.emitFinish(flowId, active.runId, "cancelled", "Automation run cancelled.");
 		return true;
 	}
 }
