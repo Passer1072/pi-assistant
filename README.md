@@ -2,7 +2,7 @@
 
 # 🐧 Pi 桌面助手 · Desktop Assistant
 
-**一个 Windows 优先、本地优先的 AI 桌面助手——会说话、能操作电脑、能把长任务编排成流程图并持续复用。**
+**一个 Windows 优先、本地优先的 AI 桌面助手——能操作电脑、能把长任务编排成流程图并持续复用。**
 
 基于 [Pi Agent Runtime](https://github.com/earendil-works/pi) 构建，默认接入 DeepSeek V4，全程离线唤醒，桌面动作可沙箱审批。
 
