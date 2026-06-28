@@ -15,6 +15,12 @@ When disabled, server configuration can still be edited offline.
 
 `Desktop Assistant MCP` is always present as a built-in example. It can be disabled but cannot be deleted. It controls safe settings in this app, such as web search mode, voice toggles, memory settings, and desktop capabilities. It never changes API keys.
 
+## Debug Bridge MCP
+
+The Debug Bridge is a separate localhost-only debug surface for external AI co-debugging. It is not managed by MCP Manager and is disabled unless the app starts with `DA_DEBUG_BRIDGE=1`.
+
+When enabled, its Streamable HTTP MCP endpoint is listed in `<agentDir>/debug-bridge.json` and documented in [Debug Bridge](DEBUG_BRIDGE.md). Unlike the built-in MCP server, the bridge is privileged and can drive sessions, reload the app, read logs, and update settings.
+
 ## Add an external stdio MCP
 
 Use MCP Manager, click Add, then fill:

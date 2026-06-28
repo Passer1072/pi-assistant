@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID } from "node:crypto";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { cp } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
@@ -10,6 +10,7 @@ import {
 	ipcMain,
 	net,
 	type RenderProcessGoneDetails,
+	session,
 	type WebContentsConsoleMessageEventParams,
 } from "electron";
 
@@ -28,6 +29,14 @@ import { DESKTOP_ASSISTANT_CHANNELS } from "../shared/types.ts";
 import { KwsService } from "../voice/kws-service.ts";
 import { VoiceBridge } from "../voice/voice-bridge.ts";
 import { BuiltInBrowserController } from "./built-in-browser-controller.ts";
+import { createDebugBridgeHandlers } from "./debug-bridge/debug-bridge-handlers.ts";
+import {
+	createDebugBridgeHandshake,
+	DebugBridgeServer,
+	printDebugBridgeBanner,
+	shouldStartDebugBridge,
+	writeDebugBridgeHandshakeFile,
+} from "./debug-bridge/debug-bridge-server.ts";
 import { ExternalAppController } from "./external-app-controller.ts";
 import { ExternalAppRegistry } from "./external-app-registry.ts";
 import { registerDesktopAssistantIpc } from "./ipc.ts";
@@ -264,6 +273,39 @@ async function createMainWindow(): Promise<BrowserWindow> {
 	app.once("before-quit", () => {
 		void officeChatBridge.close();
 	});
+	if (shouldStartDebugBridge(app)) {
+		const token = process.env.DA_DEBUG_BRIDGE_TOKEN ?? randomBytes(32).toString("hex");
+		const port = Number(process.env.DA_DEBUG_BRIDGE_PORT ?? 49250);
+		const handlers = createDebugBridgeHandlers({
+			service,
+			logStore,
+			app,
+			getWindows: () => windows,
+			agentDir,
+			clearCache: () => session.defaultSession.clearCache(),
+		});
+		const debugBridge = new DebugBridgeServer({
+			port,
+			getToken: () => token,
+			handlers,
+			service,
+			logStore,
+		});
+		void debugBridge
+			.listen()
+			.then(() => {
+				const handshake = createDebugBridgeHandshake(port, token);
+				const handshakeFile = writeDebugBridgeHandshakeFile(agentDir, handshake);
+				printDebugBridgeBanner(handshakeFile, handshake);
+			})
+			.catch((error: unknown) => {
+				console.error("Debug bridge failed to start:", error);
+				service.reportError(error);
+			});
+		app.once("before-quit", () => {
+			void debugBridge.close();
+		});
+	}
 	registerDesktopAssistantIpc({
 		ipcMain,
 		mainWindow: window,

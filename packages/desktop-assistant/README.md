@@ -36,3 +36,10 @@ Docs:
 - [MCP management](docs/mcp.md)
 - [Writing MCP servers](docs/mcp-server-authoring.md)
 - [Built-in Desktop Assistant MCP](docs/mcp-desktop-assistant-control.md)
+- [Debug Bridge for external AI co-debugging](docs/DEBUG_BRIDGE.md)
+
+## Debug Bridge
+
+For local AI-to-AI co-debugging of a running Desktop Assistant, start the app with `DA_DEBUG_BRIDGE=1` and read `<agentDir>/debug-bridge.json` for the token and port.
+
+The bridge is separate from normal MCP management: it is localhost-only, bearer-token protected, and intentionally exposes full-fidelity debug controls. See [Debug Bridge](docs/DEBUG_BRIDGE.md).

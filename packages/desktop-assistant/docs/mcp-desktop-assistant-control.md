@@ -2,6 +2,8 @@
 
 `Desktop Assistant MCP` is the built-in MCP server used as the reference implementation. It runs in-process through an MCP in-memory transport and controls only safe settings for this app.
 
+For full-fidelity local co-debugging from another AI, use the separate [Debug Bridge](DEBUG_BRIDGE.md). The Debug Bridge is disabled by default, protected by a local token, and intentionally exposes privileged session, log, reload, and settings controls.
+
 Personal custom skills are separate from built-in system/capability skills. MCP and AI tools may save, read, search, refresh, or archive only personal skills under `data/personal-skills/`. They cannot maintain built-in skills under `packages/desktop-assistant/skills/`.
 
 The server id is:
