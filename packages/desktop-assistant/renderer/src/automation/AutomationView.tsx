@@ -308,6 +308,27 @@ export function AutomationView({
 		}
 	};
 
+	const clearRuns = async (flow: AutomationFlow) => {
+		if (!window.desktopAssistant?.automationClearRuns) return;
+		const clearableCount = flow.runs.filter((run) => run.status !== "running").length;
+		if (clearableCount === 0) return;
+		if (!window.confirm(`清空「${flow.name}」的 ${clearableCount} 条运行历史？正在运行的记录会保留。`)) return;
+		setSaving(true);
+		setStatusText("");
+		try {
+			const updated = await window.desktopAssistant.automationClearRuns({ id: flow.id });
+			setList((current) => ({
+				...current,
+				flows: current.flows.map((item) => (item.id === updated.id ? updated : item)),
+			}));
+			setStatusText("运行历史已清空。");
+		} catch (error) {
+			setStatusText(error instanceof Error ? error.message : String(error));
+		} finally {
+			setSaving(false);
+		}
+	};
+
 	const deleteFlow = async (flow: AutomationFlow) => {
 		if (!window.desktopAssistant?.automationDelete) return;
 		if (!window.confirm(`删除流程"${flow.name}"？`)) return;
@@ -438,6 +459,7 @@ export function AutomationView({
 							onOpenEditor={openEditor}
 							onRun={runFlow}
 							onCancelRun={cancelRun}
+							onClearRuns={clearRuns}
 							onDelete={deleteFlow}
 							onOpenSession={onOpenSession}
 							onBackToList={() => setCompactPanel("list")}
@@ -467,6 +489,7 @@ function AutomationDetail({
 	onOpenEditor,
 	onRun,
 	onCancelRun,
+	onClearRuns,
 	onDelete,
 	onOpenSession,
 	onBackToList,
@@ -482,12 +505,15 @@ function AutomationDetail({
 	onOpenEditor: (flow: AutomationFlow) => Promise<void>;
 	onRun: (flow: AutomationFlow) => Promise<void>;
 	onCancelRun: (flow: AutomationFlow, run: AutomationRunRecord) => Promise<void>;
+	onClearRuns: (flow: AutomationFlow) => Promise<void>;
 	onDelete: (flow: AutomationFlow) => Promise<void>;
 	onOpenSession?: (sessionId: string) => void;
 	onBackToList: () => void;
 }) {
 	const [trigger, setTrigger] = useState<AutomationTrigger>(flow.trigger);
 	const [runPolicy, setRunPolicy] = useState<AutomationRunPolicy>(flow.runPolicy);
+	const historyRuns = flow.runs.filter((run) => run.status !== "running");
+	const clearableRunCount = historyRuns.length;
 
 	useEffect(() => {
 		setTrigger(flow.trigger);
@@ -630,7 +656,19 @@ function AutomationDetail({
 			<section className="automation-panel automation-panel-history history">
 				<div className="automation-panel-title">
 					<span>运行历史</span>
-					<span className="automation-history-count">{flow.runs.length} 条记录</span>
+					<div className="automation-panel-title-actions">
+						<span className="automation-history-count">{historyRuns.length} 条记录</span>
+						<button
+							type="button"
+							className="automation-icon-btn automation-history-clear"
+							aria-label="清空运行历史"
+							title="清空运行历史"
+							onClick={() => void onClearRuns(flow)}
+							disabled={busy || clearableRunCount === 0}
+						>
+							<Trash2 size={13} />
+						</button>
+					</div>
 				</div>
 				{activeRun ? (
 					<div className="automation-active-run">
@@ -660,8 +698,8 @@ function AutomationDetail({
 					</div>
 				) : null}
 				<div className="automation-history-list">
-					{flow.runs.length ? (
-						flow.runs.map((run) => (
+					{historyRuns.length ? (
+						historyRuns.map((run) => (
 							<article key={run.id} className={`automation-history-card status-${run.status}`}>
 								<span className={`automation-history-icon status-${run.status}`}>{runStatusIcon(run.status)}</span>
 								<div className="automation-history-body">

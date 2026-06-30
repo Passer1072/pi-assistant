@@ -4,6 +4,7 @@ import {
 	type ApiKeyUpdateRequest,
 	type AppLaunchCacheView,
 	type AutomationCancelRunRequest,
+	type AutomationClearRunsRequest,
 	type AutomationCreateRequest,
 	type AutomationDeleteRequest,
 	type AutomationDesignChatRequest,
@@ -210,6 +211,7 @@ export interface DesktopAssistantApi {
 	automationCreate(request: AutomationCreateRequest): Promise<AutomationFlow>;
 	automationUpdate(request: AutomationUpdateRequest): Promise<AutomationFlow>;
 	automationDelete(request: AutomationDeleteRequest): Promise<AutomationListResponse>;
+	automationClearRuns(request: AutomationClearRunsRequest): Promise<AutomationFlow>;
 	automationSetEnabled(request: AutomationSetEnabledRequest): Promise<AutomationFlow>;
 	automationRun(request: AutomationRunRequest): Promise<AutomationRunResponse>;
 	automationCancelRun(request: AutomationCancelRunRequest): Promise<AutomationRunRecord | undefined>;
@@ -462,6 +464,8 @@ const api: DesktopAssistantApi = {
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationUpdate, request) as Promise<AutomationFlow>,
 	automationDelete: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationDelete, request) as Promise<AutomationListResponse>,
+	automationClearRuns: (request) =>
+		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationClearRuns, request) as Promise<AutomationFlow>,
 	automationSetEnabled: (request) =>
 		ipcRenderer.invoke(DESKTOP_ASSISTANT_CHANNELS.automationSetEnabled, request) as Promise<AutomationFlow>,
 	automationRun: (request) =>

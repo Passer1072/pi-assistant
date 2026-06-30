@@ -1010,6 +1010,7 @@ button:disabled {
 }
 
 .automation-panel.history {
+	grid-template-rows: auto auto minmax(0, 1fr) auto;
 	min-height: 0;
 }
 
@@ -1023,6 +1024,13 @@ button:disabled {
 	text-transform: uppercase;
 	letter-spacing: 0.08em;
 	color: var(--fg-dim);
+}
+
+.automation-panel-title-actions {
+	display: inline-flex;
+	align-items: center;
+	gap: 8px;
+	min-width: 0;
 }
 
 .automation-history-count {
@@ -1107,6 +1115,12 @@ button:disabled {
 	overflow: auto;
 	min-height: 0;
 	min-width: 0;
+}
+
+.automation-history-list {
+	align-content: start;
+	max-height: clamp(220px, 36vh, 420px);
+	padding-right: 2px;
 }
 
 .automation-history-card {
@@ -1584,6 +1598,15 @@ button:disabled {
 	color: var(--fg);
 }
 
+.automation-icon-btn.automation-history-clear {
+	color: var(--fg-mute);
+}
+
+.automation-icon-btn.automation-history-clear:hover:not(:disabled) {
+	border-color: rgba(255, 118, 118, 0.28);
+	color: #ffd6d6;
+}
+
 .automation-editor-title-group {
 	display: grid;
 	gap: 3px;
@@ -1885,6 +1908,20 @@ button:disabled {
 	box-shadow: 0 22px 50px rgba(0, 0, 0, 0.5);
 	overflow: hidden;
 	user-select: none;
+	transition: transform 180ms ease, opacity 160ms ease, box-shadow 180ms ease;
+}
+
+.dynamic-window.collapsed {
+	top: 50%;
+	right: 0;
+	bottom: auto;
+	left: auto;
+	width: 34px;
+	border-right: none;
+	border-radius: 12px 0 0 12px;
+	background: rgba(18, 21, 29, 0.94);
+	box-shadow: -10px 0 28px rgba(0, 0, 0, 0.36);
+	transform: translateY(-50%);
 }
 
 .dynamic-window.docked {
@@ -1900,10 +1937,56 @@ button:disabled {
 	box-shadow: -14px 0 40px rgba(0, 0, 0, 0.4);
 }
 
+.dynamic-window.docked.collapsed {
+	top: 50%;
+	bottom: auto;
+	width: 34px;
+	border-left: 1px solid var(--stroke);
+	border-radius: 12px 0 0 12px;
+	box-shadow: -10px 0 28px rgba(0, 0, 0, 0.36);
+	transform: translateY(-50%);
+}
+
 /* When docked, make room so the panel never sits over the thread / composer. */
 .chat-screen.dynamic-docked .thread,
 .chat-screen.dynamic-docked .composer {
 	margin-right: 372px;
+}
+
+.dynamic-window-pull-tab {
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	width: 34px;
+	min-height: 104px;
+	padding: 9px 0;
+	color: var(--fg-dim);
+	background: rgba(106, 169, 255, 0.08);
+	border-left: 1px solid var(--stroke);
+	writing-mode: vertical-rl;
+	text-orientation: mixed;
+	letter-spacing: 0;
+	transition: background 120ms ease, color 120ms ease, transform 120ms ease;
+}
+
+.dynamic-window-pull-tab svg {
+	flex: none;
+	writing-mode: horizontal-tb;
+}
+
+.dynamic-window-pull-tab span {
+	font-size: 12px;
+	font-weight: 600;
+	line-height: 1;
+	white-space: nowrap;
+}
+
+.dynamic-window-pull-tab:hover {
+	color: var(--fg);
+	background: rgba(106, 169, 255, 0.16);
+	transform: translateX(-2px);
 }
 
 .dynamic-window-head {
@@ -1966,9 +2049,6 @@ button:disabled {
 .dynamic-window-ctrl.on {
 	color: #9cc4ff;
 	background: rgba(106, 169, 255, 0.16);
-}
-.dynamic-window.collapsed .dynamic-window-collapse {
-	transform: rotate(-90deg);
 }
 
 .dynamic-window-tabs {
@@ -2456,9 +2536,12 @@ button:disabled {
 		border-radius: 13px;
 	}
 
-	.automation-history-list,
 	.automation-chat-list {
 		overflow: visible;
+	}
+
+	.automation-history-list {
+		max-height: clamp(220px, 42vh, 360px);
 	}
 
 	.automation-history-card {
@@ -3525,8 +3608,13 @@ button:disabled {
 	min-width: 0;
 }
 
-.composer-bar > .conversation-thinking-toggle {
+.composer-bar > .conversation-thinking-toggle,
+.composer-bar > .dynamic-window-toggle {
 	margin-left: auto;
+}
+
+.composer-bar > .conversation-thinking-toggle + .dynamic-window-toggle {
+	margin-left: 0;
 }
 
 .composer-actions {
@@ -3537,7 +3625,8 @@ button:disabled {
 	flex-shrink: 0;
 }
 
-.conversation-thinking-toggle {
+.conversation-thinking-toggle,
+.dynamic-window-toggle {
 	display: inline-flex;
 	align-items: center;
 	gap: 5px;
@@ -3570,7 +3659,19 @@ button:disabled {
 	transform: translateY(-1px);
 }
 
-.conversation-thinking-toggle.on {
+.dynamic-window-toggle > span {
+	font-size: 11.5px;
+	line-height: 1;
+}
+
+.dynamic-window-toggle:hover {
+	background: var(--bg-soft-hover);
+	color: var(--fg);
+	transform: translateY(-1px);
+}
+
+.conversation-thinking-toggle.on,
+.dynamic-window-toggle.on {
 	color: var(--accent);
 	border-color: rgba(106, 169, 255, 0.34);
 	background: rgba(106, 169, 255, 0.12);
@@ -3995,6 +4096,10 @@ button:disabled {
 	gap: 14px;
 }
 
+.settings-scroll > * {
+	flex-shrink: 0;
+}
+
 /* --- Two-pane settings layout (nav + content). Compact = nav on top; expanded = sidebar. --- */
 .settings-body {
 	min-height: 0;
@@ -4082,6 +4187,10 @@ button:disabled {
 	flex-direction: column;
 	gap: 14px;
 	animation: fade-up 220ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.settings-content > * {
+	flex-shrink: 0;
 }
 
 /* Expanded window: sidebar on the left. */

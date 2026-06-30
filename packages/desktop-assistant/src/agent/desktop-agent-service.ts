@@ -54,6 +54,7 @@ import {
 	type AppLaunchCacheView,
 	AUTOMATION_PERMISSION_MODES,
 	type AutomationCancelRunRequest,
+	type AutomationClearRunsRequest,
 	type AutomationCreateRequest,
 	type AutomationDeleteRequest,
 	type AutomationDesignChatRequest,
@@ -1534,6 +1535,12 @@ export class DesktopAgentService {
 		const deleted = this.automationRepository.delete(request.id);
 		this.emitAutomationChanged(request.id);
 		return deleted;
+	}
+
+	clearAutomationRuns(request: AutomationClearRunsRequest): AutomationFlow {
+		const flow = this.automationRepository.clearRuns(request.id);
+		this.emitAutomationChanged(flow.id);
+		return flow;
 	}
 
 	setAutomationEnabled(request: AutomationSetEnabledRequest): AutomationFlow {

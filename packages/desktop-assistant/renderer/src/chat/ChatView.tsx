@@ -8,6 +8,8 @@ import {
 	FileText,
 	Loader2,
 	Mic,
+	PanelRightClose,
+	PanelRightOpen,
 	Pencil,
 	Send,
 	Sparkles,
@@ -65,6 +67,25 @@ const THREAD_ITEM_GAP_PX = 10;
 const VIRTUAL_ITEM_ESTIMATED_HEIGHT_PX = 92;
 const VIRTUAL_OVERSCAN_PX = 720;
 const VIRTUALIZATION_THRESHOLD = 80;
+const DYNAMIC_WINDOW_ENABLED_KEY = "dynamicWindow.enabled";
+const DYNAMIC_WINDOW_DOCKED_KEY = "dynamicWindow.docked";
+
+function readStoredBool(key: string, fallback: boolean): boolean {
+	try {
+		const raw = localStorage.getItem(key);
+		return raw === null ? fallback : raw === "1";
+	} catch {
+		return fallback;
+	}
+}
+
+function writeStoredBool(key: string, value: boolean): void {
+	try {
+		localStorage.setItem(key, value ? "1" : "0");
+	} catch {
+		// best-effort preference persistence
+	}
+}
 
 function isThreadAtBottom(el: HTMLElement): boolean {
 	return el.scrollHeight - el.scrollTop - el.clientHeight <= THREAD_BOTTOM_THRESHOLD_PX;
@@ -309,24 +330,24 @@ export function ChatView({
 	const previousIsAnsweringRef = useRef(snapshot.isRunning || loadingHistory);
 	const [threadScrollState, setThreadScrollState] = useState({ scrollTop: 0, viewportHeight: 0, version: 0 });
 	const [memoBannerDismissed, setMemoBannerDismissed] = useState(false);
-	const [dynamicDocked, setDynamicDocked] = useState<boolean>(() => {
-		try {
-			return localStorage.getItem("dynamicWindow.docked") === "1";
-		} catch {
-			return false;
-		}
-	});
+	const [dynamicEnabled, setDynamicEnabled] = useState<boolean>(() => readStoredBool(DYNAMIC_WINDOW_ENABLED_KEY, true));
+	const [dynamicCollapsed, setDynamicCollapsed] = useState(true);
+	const [dynamicDocked, setDynamicDocked] = useState<boolean>(() => readStoredBool(DYNAMIC_WINDOW_DOCKED_KEY, false));
+	const toggleDynamicEnabled = useCallback(() => {
+		const next = !dynamicEnabled;
+		setDynamicEnabled(next);
+		writeStoredBool(DYNAMIC_WINDOW_ENABLED_KEY, next);
+		if (next) setDynamicCollapsed(true);
+	}, [dynamicEnabled]);
 	const toggleDynamicDocked = useCallback(() => {
-		setDynamicDocked((value) => {
-			const next = !value;
-			try {
-				localStorage.setItem("dynamicWindow.docked", next ? "1" : "0");
-			} catch {
-				// best-effort persistence
-			}
-			return next;
-		});
-	}, []);
+		const next = !dynamicDocked;
+		setDynamicDocked(next);
+		writeStoredBool(DYNAMIC_WINDOW_DOCKED_KEY, next);
+	}, [dynamicDocked]);
+
+	useEffect(() => {
+		setDynamicCollapsed(true);
+	}, [snapshot.sessionId]);
 
 	// 输入框随内容自然增高，最多 6 行；第 7 行起停止增高并显示滚动条。
 	useLayoutEffect(() => {
@@ -534,6 +555,7 @@ export function ChatView({
 	const thinkingSupported = conversationThinking.supported;
 	const voiceTone = voiceToneOf(snapshot.voiceOverlay.state);
 	const contextUsageText = formatContextUsage(snapshot);
+	const showDynamicWindow = hasDynamicWindow && dynamicEnabled;
 	const voiceComposerClass =
 		voiceTone === "capturing"
 			? " voice-capturing"
@@ -544,7 +566,7 @@ export function ChatView({
 					: "";
 
 	return (
-		<div className={`screen chat-screen${dynamicDocked && hasDynamicWindow ? " dynamic-docked" : ""}`}>
+		<div className={`screen chat-screen${dynamicDocked && showDynamicWindow && !dynamicCollapsed ? " dynamic-docked" : ""}`}>
 			<TitleBar
 				onMenu={onMenu}
 				title="Pi 桌面助手"
@@ -832,6 +854,18 @@ export function ChatView({
 						<Brain size={13} />
 						<span>{conversationThinking.enabled ? "深度思考开" : "深度思考关"}</span>
 					</button>
+					<button
+						type="button"
+						className={`dynamic-window-toggle ${dynamicEnabled ? "on" : ""}`}
+						role="switch"
+						aria-checked={dynamicEnabled}
+						aria-label={dynamicEnabled ? "关闭灵动窗" : "开启灵动窗"}
+						title={dynamicEnabled ? "灵动窗开启：默认贴在右侧，可拉出查看" : "灵动窗关闭"}
+						onClick={toggleDynamicEnabled}
+					>
+						{dynamicEnabled ? <PanelRightOpen size={13} /> : <PanelRightClose size={13} />}
+						<span>灵动窗</span>
+					</button>
 					<div className="composer-actions">
 						{isAnswering && hasTypedPrompt ? (
 							<button
@@ -861,13 +895,15 @@ export function ChatView({
 			{petConfig.enabled && petLayerActive ? (
 				<PetLayer config={petConfig} engineRef={petEngineRef} messageCount={snapshot.messages.length} />
 			) : null}
-			{hasDynamicWindow ? (
+			{showDynamicWindow ? (
 				<Suspense fallback={null}>
 					<DynamicWindow
 						liveFlow={snapshot.liveFlow}
 						dynamicWindow={snapshot.dynamicWindow}
 						docked={dynamicDocked}
 						onToggleDocked={toggleDynamicDocked}
+						collapsed={dynamicCollapsed}
+						onCollapsedChange={setDynamicCollapsed}
 					/>
 				</Suspense>
 			) : null}

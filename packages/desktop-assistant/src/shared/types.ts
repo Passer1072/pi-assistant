@@ -1936,6 +1936,10 @@ export interface AutomationDeleteRequest {
 	id: string;
 }
 
+export interface AutomationClearRunsRequest {
+	id: string;
+}
+
 export interface AutomationSetEnabledRequest {
 	id: string;
 	enabled: boolean;
@@ -2937,6 +2941,7 @@ export const DESKTOP_ASSISTANT_CHANNELS = {
 	automationCreate: "desktop-assistant:automation-create",
 	automationUpdate: "desktop-assistant:automation-update",
 	automationDelete: "desktop-assistant:automation-delete",
+	automationClearRuns: "desktop-assistant:automation-clear-runs",
 	automationSetEnabled: "desktop-assistant:automation-set-enabled",
 	automationRun: "desktop-assistant:automation-run",
 	automationCancelRun: "desktop-assistant:automation-cancel-run",

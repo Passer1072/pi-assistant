@@ -48,6 +48,25 @@ describe("AutomationRepositoryService", () => {
 		}
 	});
 
+	it("clears finished run history without dropping a running run", () => {
+		const dir = tempDir();
+		try {
+			const repo = new AutomationRepositoryService(dir);
+			const flow = repo.create({ name: "History cleanup" });
+			const finishedRun = repo.recordRunStart(flow.id, "manual");
+			repo.recordRunFinish(flow.id, finishedRun.id, "succeeded", { summary: "Done" });
+			const runningRun = repo.recordRunStart(flow.id, "manual");
+
+			const updated = repo.clearRuns(flow.id);
+
+			expect(updated.runs).toEqual([runningRun]);
+			expect(updated.lastRun).toEqual(runningRun);
+			expect(JSON.parse(readFileSync(join(dir, "automations.json"), "utf-8")).automations[0].runs).toHaveLength(1);
+		} finally {
+			rmSync(dir, { recursive: true, force: true });
+		}
+	});
+
 	it("does not overwrite an already finished run", () => {
 		const dir = tempDir();
 		try {

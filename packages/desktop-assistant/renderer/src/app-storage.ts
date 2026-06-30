@@ -14,9 +14,12 @@ export function persistSettings(settings: DesktopAssistantSettings): void {
 			permissionMode: settings.permissionMode,
 			capabilities: settings.capabilities,
 			webSearch: settings.webSearch,
-			browser: settings.browser,
 			voice: settings.voice,
 			tokenSaving: settings.tokenSaving,
+			// Browser settings are authoritative in the main process
+			// (agent/browser-settings.json). Browser utility windows can update them
+			// without touching this localStorage cache, so replaying a cached browser
+			// block on startup would clobber shortcuts added from the built-in browser.
 			// Sandbox config is intentionally NOT persisted here: it is authoritative in
 			// the main process (agent/sandbox.json). Mirroring it in localStorage would
 			// let the renderer re-push stale values on startup and clobber sandbox.json.
@@ -38,6 +41,9 @@ export function loadStoredSettings(): Partial<DesktopAssistantSettings> | undefi
 		if (!raw) return undefined;
 		const parsed = JSON.parse(raw) as unknown;
 		if (typeof parsed !== "object" || parsed === null) return undefined;
+		// Drop any browser key that older builds wrote, so stale localStorage never
+		// overwrites the main-process browser settings on startup.
+		delete (parsed as Record<string, unknown>).browser;
 		// Drop any sandbox key that older builds wrote, so the renderer never pushes
 		// stale sandbox settings over the main-process authority on startup.
 		delete (parsed as Record<string, unknown>).sandbox;

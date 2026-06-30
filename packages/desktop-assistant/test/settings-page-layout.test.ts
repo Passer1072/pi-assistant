@@ -28,4 +28,26 @@ describe("settings page layout styles", () => {
 		).toBe(true);
 		expect(selectorBlockIncludes(styles, ".mcp-entry-row > .primary-btn", "min-width: max-content;")).toBe(true);
 	});
+
+	it("prevents settings sections from shrinking into collapsed lines", () => {
+		const styles = readFileSync(stylesPath, "utf-8");
+
+		expect(selectorBlockIncludes(styles, ".settings-content > *", "flex-shrink: 0;")).toBe(true);
+		expect(selectorBlockIncludes(styles, ".settings-scroll > *", "flex-shrink: 0;")).toBe(true);
+	});
+
+	it("keeps the dynamic window collapsed on the right edge without reserving chat width", () => {
+		const styles = readFileSync(stylesPath, "utf-8");
+
+		expect(selectorBlockIncludes(styles, ".dynamic-window.collapsed", "right: 0;")).toBe(true);
+		expect(selectorBlockIncludes(styles, ".dynamic-window.collapsed", "transform: translateY(-50%);")).toBe(true);
+		expect(selectorBlockIncludes(styles, ".dynamic-window-pull-tab", "writing-mode: vertical-rl;")).toBe(true);
+		expect(
+			selectorBlockIncludes(
+				styles,
+				".chat-screen.dynamic-docked .thread,\n.chat-screen.dynamic-docked .composer",
+				"margin-right: 372px;",
+			),
+		).toBe(true);
+	});
 });

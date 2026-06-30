@@ -7,6 +7,7 @@ import {
 	type AbortRequest,
 	type ApiKeyUpdateRequest,
 	type AutomationCancelRunRequest,
+	type AutomationClearRunsRequest,
 	type AutomationCreateRequest,
 	type AutomationDeleteRequest,
 	type AutomationFlow,
@@ -611,6 +612,9 @@ export function registerDesktopAssistantIpc(params: {
 		service.deleteAutomation(request);
 		return service.listAutomations();
 	});
+	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationClearRuns, (_event, request: AutomationClearRunsRequest) =>
+		service.clearAutomationRuns(request),
+	);
 	ipcMain.handle(DESKTOP_ASSISTANT_CHANNELS.automationSetEnabled, (_event, request: AutomationSetEnabledRequest) =>
 		service.setAutomationEnabled(request),
 	);

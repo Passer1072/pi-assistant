@@ -2,6 +2,7 @@ import type {
 	AbortRequest,
 	ApiKeyUpdateRequest,
 	AutomationCancelRunRequest,
+	AutomationClearRunsRequest,
 	AutomationCreateRequest,
 	AutomationDeleteRequest,
 	AutomationDesignChatRequest,
@@ -157,6 +158,7 @@ import type {
 
 export type {
 	AutomationCancelRunRequest,
+	AutomationClearRunsRequest,
 	AutomationCreateRequest,
 	AutomationDeleteRequest,
 	AutomationDesignChatRequest,
@@ -232,6 +234,7 @@ interface DesktopAssistantApi {
 	automationCreate(request: AutomationCreateRequest): Promise<AutomationFlow>;
 	automationUpdate(request: AutomationUpdateRequest): Promise<AutomationFlow>;
 	automationDelete(request: AutomationDeleteRequest): Promise<AutomationListResponse>;
+	automationClearRuns(request: AutomationClearRunsRequest): Promise<AutomationFlow>;
 	automationSetEnabled(request: AutomationSetEnabledRequest): Promise<AutomationFlow>;
 	automationRun(request: AutomationRunRequest): Promise<AutomationRunResponse>;
 	automationCancelRun(request: AutomationCancelRunRequest): Promise<AutomationRunRecord | undefined>;

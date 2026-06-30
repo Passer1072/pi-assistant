@@ -156,6 +156,16 @@ export class AutomationRepositoryService {
 		return run;
 	}
 
+	clearRuns(id: string): AutomationFlow {
+		this.ensureLoaded();
+		const flow = this.requireFlow(id);
+		flow.runs = flow.runs.filter((run) => run.status === "running");
+		flow.lastRun = flow.runs[0];
+		flow.updatedAt = new Date().toISOString();
+		this.flush();
+		return flow;
+	}
+
 	delete(id: string): boolean {
 		this.ensureLoaded();
 		const index = this.flows.findIndex((flow) => flow.id === id);

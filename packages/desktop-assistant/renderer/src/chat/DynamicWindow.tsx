@@ -1,5 +1,6 @@
 import {
 	ChevronDown,
+	ChevronLeft,
 	ExternalLink,
 	Folder,
 	GripVertical,
@@ -11,7 +12,7 @@ import {
 	Workflow,
 	Globe,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import type {
 	DynamicWindowCommand,
 	DynamicWindowFacet,
@@ -28,7 +29,6 @@ import { FileArtifactList } from "./FileArtifactCard.tsx";
 import { buildFileTree } from "./dynamic-window-tree.ts";
 
 const POS_KEY = "dynamicWindow.pos";
-const COLLAPSED_KEY = "dynamicWindow.collapsed";
 const LOCKED_KEY = "dynamicWindow.locked";
 
 const FACET_ORDER: DynamicWindowFacet[] = ["flow", "files", "web", "commands"];
@@ -78,16 +78,19 @@ export function DynamicWindow({
 	dynamicWindow,
 	docked,
 	onToggleDocked,
+	collapsed,
+	onCollapsedChange,
 }: {
 	liveFlow?: LiveFlowSnapshot;
 	dynamicWindow?: DynamicWindowSnapshot;
 	docked: boolean;
 	onToggleDocked: () => void;
+	collapsed: boolean;
+	onCollapsedChange: Dispatch<SetStateAction<boolean>>;
 }) {
 	const winRef = useRef<HTMLDivElement>(null);
 	const dragOffset = useRef<{ dx: number; dy: number } | null>(null);
 	const [pos, setPos] = useState<Position | null>(() => loadPosition());
-	const [collapsed, setCollapsed] = useState<boolean>(() => readBool(COLLAPSED_KEY));
 	const [locked, setLocked] = useState<boolean>(() => readBool(LOCKED_KEY));
 
 	const sig: Record<DynamicWindowFacet, number> = useMemo(
@@ -122,7 +125,6 @@ export function DynamicWindow({
 		setSeen((prev) => (prev[displayFacet] === sig[displayFacet] ? prev : { ...prev, [displayFacet]: sig[displayFacet] }));
 	}, [displayFacet, sig]);
 
-	useEffect(() => writeBool(COLLAPSED_KEY, collapsed), [collapsed]);
 	useEffect(() => writeBool(LOCKED_KEY, locked), [locked]);
 	useEffect(() => {
 		try {
@@ -162,8 +164,26 @@ export function DynamicWindow({
 
 	if (available.length === 0) return null;
 
-	const style = !docked && pos ? { left: `${pos.left}px`, top: `${pos.top}px`, right: "auto", bottom: "auto" } : undefined;
+	const style =
+		!collapsed && !docked && pos ? { left: `${pos.left}px`, top: `${pos.top}px`, right: "auto", bottom: "auto" } : undefined;
 	const className = `dynamic-window${collapsed ? " collapsed" : ""}${docked ? " docked" : ""}`;
+
+	if (collapsed) {
+		return (
+			<div ref={winRef} className={className}>
+				<button
+					type="button"
+					className="dynamic-window-pull-tab"
+					aria-label="拉出灵动窗"
+					title="拉出灵动窗"
+					onClick={() => onCollapsedChange(false)}
+				>
+					<ChevronLeft size={15} />
+					<span>灵动窗</span>
+				</button>
+			</div>
+		);
+	}
 
 	return (
 		<div ref={winRef} className={className} style={style}>
@@ -202,47 +222,43 @@ export function DynamicWindow({
 						aria-label={collapsed ? "展开" : "折叠"}
 						aria-expanded={!collapsed}
 						onPointerDown={(event) => event.stopPropagation()}
-						onClick={() => setCollapsed((value) => !value)}
+						onClick={() => onCollapsedChange((value) => !value)}
 					>
 						<ChevronDown size={14} />
 					</button>
 				</div>
 			</div>
 
-			{collapsed ? null : (
-				<>
-					<nav className="dynamic-window-tabs" role="tablist">
-						{available.map((facet) => {
-							const Meta = FACET_META[facet];
-							const Icon = Meta.icon;
-							const unread = facet !== displayFacet && sig[facet] !== (seen[facet] ?? 0);
-							return (
-								<button
-									key={facet}
-									type="button"
-									role="tab"
-									aria-selected={facet === displayFacet}
-									className={`dynamic-window-tab${facet === displayFacet ? " active" : ""}`}
-									onClick={() => {
-										setDisplayFacet(facet);
-										setLocked(true);
-									}}
-								>
-									<Icon size={15} />
-									<span>{Meta.label}</span>
-									{unread ? <span className="dynamic-window-dot" /> : null}
-								</button>
-							);
-						})}
-					</nav>
-					<div className="dynamic-window-body">
-						{displayFacet === "flow" && liveFlow ? <FlowFacet data={liveFlow} /> : null}
-						{displayFacet === "files" && dynamicWindow ? <FilesFacet files={dynamicWindow.files} /> : null}
-						{displayFacet === "web" && dynamicWindow ? <WebFacet web={dynamicWindow.web} /> : null}
-						{displayFacet === "commands" && dynamicWindow ? <CommandsFacet commands={dynamicWindow.commands} /> : null}
-					</div>
-				</>
-			)}
+			<nav className="dynamic-window-tabs" role="tablist">
+				{available.map((facet) => {
+					const Meta = FACET_META[facet];
+					const Icon = Meta.icon;
+					const unread = facet !== displayFacet && sig[facet] !== (seen[facet] ?? 0);
+					return (
+						<button
+							key={facet}
+							type="button"
+							role="tab"
+							aria-selected={facet === displayFacet}
+							className={`dynamic-window-tab${facet === displayFacet ? " active" : ""}`}
+							onClick={() => {
+								setDisplayFacet(facet);
+								setLocked(true);
+							}}
+						>
+							<Icon size={15} />
+							<span>{Meta.label}</span>
+							{unread ? <span className="dynamic-window-dot" /> : null}
+						</button>
+					);
+				})}
+			</nav>
+			<div className="dynamic-window-body">
+				{displayFacet === "flow" && liveFlow ? <FlowFacet data={liveFlow} /> : null}
+				{displayFacet === "files" && dynamicWindow ? <FilesFacet files={dynamicWindow.files} /> : null}
+				{displayFacet === "web" && dynamicWindow ? <WebFacet web={dynamicWindow.web} /> : null}
+				{displayFacet === "commands" && dynamicWindow ? <CommandsFacet commands={dynamicWindow.commands} /> : null}
+			</div>
 		</div>
 	);
 }
